@@ -67,15 +67,20 @@ The package ships the same `conformance_vectors.json` the engine is judged again
 $ pip install 'obsign-verify[dev]' && pytest
 ```
 
-Run against the public challenge bundles — one honest receipt and seven forgeries,
-including a **resealed** one whose signature is intact and whose claim is false:
+**The forgeries ship with the package.** Nine bundles — two that must verify and
+seven that must be refused — live in `challenge/bundles/`, so you get them in the
+same clone as the verifier. Nothing to request, nothing behind a login:
 
 ```console
-$ obsign-verify bundles/*/receipt.json
+$ obsign-verify challenge/bundles/*/receipt.json
 ```
 
-The resealed forgery passes step 1 and fails step 2. That is the entire argument
-for re-derivation in one file.
+Exit `1` is the correct result: seven of the nine are forgeries and refusing them is
+the job. `challenge/ATTESTATION.md` says what each one attacks.
+
+The one to look at is `resealed_tampered_claim`. Its output was edited, its receipt
+re-hashed, its signature re-applied — so it passes the integrity check cleanly and
+fails only on re-derivation. That single bundle is the entire argument for step 2.
 
 ## Why the number is the same on your machine
 

@@ -1,0 +1,32 @@
+{
+  "_challenge": {
+    "expect_verified": false,
+    "note": "required claim fields removed"
+  },
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 5080 Laptop GPU",
+    "numpy": "2.3.5",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3",
+    "torch": "2.11.0+cu128"
+  },
+  "input": {
+    "kind": "generated",
+    "ref": "params",
+    "sha256": null
+  },
+  "kernel": "tau_field_fixed",
+  "producer": {
+    "name": "obsign",
+    "spec": "obsign/spec/1",
+    "version": "2.0.0"
+  },
+  "receipt_sha256": "b8b4f656b10646186ca9fe16d1e34eb106f4f2336d2db8f8f4cbb4a0660a5527",
+  "run": {
+    "backend": "cpu-fixed",
+    "deterministic": true,
+    "device": "numpy",
+    "dtype": "int64"
+  },
+  "spec": "obsign/receipt/v1"
+}

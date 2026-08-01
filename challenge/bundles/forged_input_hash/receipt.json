@@ -1,0 +1,62 @@
+{
+  "_challenge": {
+    "expect_verified": false,
+    "note": "claims the computation ran on data it did not run on"
+  },
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 5080 Laptop GPU",
+    "numpy": "2.3.5",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3",
+    "torch": "2.11.0+cu128"
+  },
+  "input": {
+    "kind": "generated",
+    "ref": "params",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "kernel": "tau_field_fixed",
+  "output": {
+    "dtype": "int64",
+    "sha256": "a50bef430f745b12111225eed12cd0e4f86119ccb0fb47a878ed1f61d50b3ea3",
+    "shape": [
+      64,
+      64
+    ]
+  },
+  "params": {
+    "D": 0.14,
+    "dt": 0.15,
+    "frac_bits": 24,
+    "gamma": 0.02,
+    "grid": 64,
+    "sources": [
+      [
+        0.3,
+        0.3,
+        0.11,
+        0.01
+      ],
+      [
+        0.7,
+        0.7,
+        0.16,
+        0.008
+      ]
+    ],
+    "steps": 100
+  },
+  "producer": {
+    "name": "obsign",
+    "spec": "obsign/spec/1",
+    "version": "2.0.0"
+  },
+  "receipt_sha256": "b8b4f656b10646186ca9fe16d1e34eb106f4f2336d2db8f8f4cbb4a0660a5527",
+  "run": {
+    "backend": "cpu-fixed",
+    "deterministic": true,
+    "device": "numpy",
+    "dtype": "int64"
+  },
+  "spec": "obsign/receipt/v1"
+}

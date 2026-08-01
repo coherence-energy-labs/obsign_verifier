@@ -324,3 +324,51 @@ def test_no_framework_is_claimed_without_stating_its_limits():
     assert evidenced, "no frameworks mapped -- this assertion would be vacuous"
     assert evidenced <= uncovered, f"claimed without limits: {sorted(evidenced - uncovered)}"
     assert set(cmap.FRAMEWORKS) == evidenced | uncovered
+
+
+# --------------------------------------------------- the challenge ships here
+
+def test_the_challenge_is_self_contained_in_THIS_repo():
+    """The README tells a stranger to run the forgeries. They must be in the clone.
+
+    The first version of this package shipped that instruction while the bundles
+    lived in the PRIVATE engine repo -- an instruction that could not be followed by
+    the only person it was written for. A README that documents an impossible command
+    is worse than one that documents nothing.
+    """
+    bundles = sorted((Path(__file__).resolve().parents[1] / "challenge" / "bundles")
+                     .glob("*/receipt.json"))
+    assert len(bundles) >= 9, f"only {len(bundles)} bundle(s) present in this repo"
+
+
+def test_every_shipped_bundle_gets_the_verdict_it_declares():
+    """Each bundle states its own expectation in `_challenge.expect_verified`, and the
+    verifier must agree with all nine. Two must verify, seven must be refused."""
+    bundles = sorted((Path(__file__).resolve().parents[1] / "challenge" / "bundles")
+                     .glob("*/receipt.json"))
+    assert bundles, "no bundles -- this assertion would be vacuous"
+    expected_true = 0
+    for path in bundles:
+        receipt = load_receipt(path.read_text(encoding="utf-8"))
+        declared = receipt.get("_challenge", {}).get("expect_verified")
+        assert isinstance(declared, bool), f"{path.parent.name} declares no expectation"
+        expected_true += declared
+        assert verify(receipt)["verified"] is declared, (
+            f"{path.parent.name}: expected verified={declared}")
+    assert expected_true == 2, (
+        f"{expected_true} bundles expected to verify; two should -- the honest receipt "
+        f"and the env-only change that must NOT break it")
+
+
+def test_the_resealed_forgery_survives_integrity_and_dies_on_re_derivation():
+    """The load-bearing bundle, checked as shipped rather than as constructed.
+
+    If this one ever failed on INTEGRITY instead, it would stop demonstrating why
+    step 2 exists -- and the whole product argument rests on it.
+    """
+    path = (Path(__file__).resolve().parents[1] / "challenge" / "bundles"
+            / "resealed_tampered_claim" / "receipt.json")
+    res = verify(load_receipt(path.read_text(encoding="utf-8")))
+    assert res["integrity"] is True, "must pass step 1 or it proves nothing"
+    assert res["reproduced"] is False
+    assert res["verified"] is False
