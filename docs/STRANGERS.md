@@ -93,6 +93,12 @@ The interesting attacks are not on the cryptography:
 - **Find a valid receipt it refuses.** Equally serious in the other direction — a
   verifier that cries wolf is one people stop running.
 
-A funded clean-room bounty for an independent implementation is Decision D-05 and is
-not open yet. This page will say so when it is; until then, nobody should read a
-reward into it.
+**There is no cash bounty, and there will not be one.** What an independent
+implementation earns is **recognition**: named here, named in the conformance suite it
+is judged against, and credited in the spec as the second implementation. That is the
+honest offer, and it is stated plainly so nobody spends a weekend expecting otherwise.
+
+It is also the offer that fits the artifact. A second implementation is the protocol's
+graduation event because it proves the spec is writable-from, not because it was paid
+for — and money would attract people optimising for a payout rather than for finding
+the place we are wrong.

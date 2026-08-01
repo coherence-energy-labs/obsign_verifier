@@ -91,12 +91,15 @@ across the platforms tested; not proven impossible.
 
 ## Status
 
-`BUILT`, not `SHIPPED`. **This package is not published and must not be.**
+**Apache-2.0.** Permissive on purpose: this is the artifact we ask strangers to run in
+order to check us, and a licence that adds friction to that would defeat its own point.
+It matches what the estate's other public "check our work" repos already carry.
 
-- The name is **provisional** — the `obsign` name on PyPI is held by a placeholder
-  that is not ours. Decision **D-02** picks the launch name and takes the registries,
-  the domain and the org handle *before* any announcement.
-- The licence line is **Decision D-03** and is not yet made, so this repository
-  ships no `LICENSE` file. Publishing without one would be worse than waiting.
+`BUILT`. Publication is a single decision away — the package name `obsign-verify` was
+verified available on PyPI on 2026-08-01, and everything here installs and passes today.
 
-Renaming is one line in `pyproject.toml`. Taking a name someone else holds is not.
+**A note on the name.** The bare `obsign` name is not available and is not ours: a PyPI
+placeholder reading *"Reserved for the Obsign project — cryptographic proof of AI agent
+actions"* was uploaded on 2026-07-30, seventeen minutes after the GitHub org it points at
+was created. This package is the verifier rather than the engine, so the longer name is
+the accurate one in any case.

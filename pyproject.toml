@@ -3,15 +3,21 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# NAME IS PROVISIONAL AND THIS PACKAGE MUST NOT BE PUBLISHED UNDER IT.
-# PROGRAM.md §2.3.2: the `obsign` name on PyPI is held by a placeholder that is not
-# ours. Decision D-02 picks the launch name and takes the registries, the domain and
-# the org handle BEFORE any announcement. Renaming here is a one-line change; taking
-# a name someone else already holds is not.
+# `obsign-verify` — VERIFIED AVAILABLE on PyPI 2026-08-01, and deliberately not `obsign`.
+#
+# The bare `obsign` name is HELD BY SOMEONE ELSE: PyPI 0.0.1 "Reserved for the Obsign
+# project — cryptographic proof of AI agent actions", pointing at github.com/obsign, an
+# org created 2026-07-30 16:57Z with the PyPI name reserved 17 minutes later. Verified
+# not ours by the §0.5 test — this account is a member of coherence-energy-labs only.
+#
+# This package is the VERIFIER, not the engine, so the longer name is the accurate one
+# regardless: it says what you install and what it does.
 name = "obsign-verify"
 version = "0.1.0"
 description = "Re-derive an Obsign receipt's claim on your own machine, offline."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Coherence Energy Labs" }]
 keywords = ["provenance", "receipts", "verification", "determinism", "reproducibility"]
