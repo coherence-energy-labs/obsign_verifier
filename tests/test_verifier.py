@@ -266,3 +266,25 @@ def test_recording_env_does_not_change_the_receipt_hash():
     r["env"] = {"os": "something-else-entirely", "python": "0.0"}
     assert canonical_sha256(claim_of(r)) == before
     assert verify(r)["verified"] is True
+
+
+def test_a_receipt_survives_line_ending_conversion():
+    """A receipt is robust to transport mangling BY DESIGN.
+
+    `receipt_sha256` covers the parsed claim re-canonicalised, not the file bytes,
+    so a receipt still verifies after being emailed, pasted into a ticket, or
+    checked out on a platform with different line endings.
+
+    This is worth a test because the property is easy to lose: any future change
+    that hashed raw file bytes would 'tighten' the format and silently break every
+    receipt that ever crossed a Windows checkout. Two byte-pins in this estate were
+    broken by exactly that conversion in a single day.
+    """
+    stream = Path(__file__).resolve().parents[1] / "stream"
+    if not stream.is_dir():
+        pytest.skip("stream not built")
+    lf = (stream / "v1_basic.json").read_bytes()
+    crlf = lf.replace(bytes([10]), bytes([13, 10]))
+    assert crlf != lf, "fixture was already CRLF -- the test would prove nothing"
+    for form in (lf, crlf):
+        assert verify(load_receipt(form.decode("utf-8")))["verified"] is True

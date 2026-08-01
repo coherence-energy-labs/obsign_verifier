@@ -1,0 +1,13 @@
+# The published receipts are JSON, and their `receipt_sha256` covers the PARSED
+# claim re-canonicalised -- not the file bytes. That is a deliberate design
+# property, not luck: a receipt survives being emailed, pasted into a ticket, or
+# checked out on a platform with different line endings, which a raw byte-pin does
+# not. `test_a_receipt_survives_line_ending_conversion` pins it.
+#
+# They are still marked -text. Two byte-pins in this estate were broken by exactly
+# this conversion in a single day (a release SHA256SUMS that could not verify on any
+# platform, and a ten-file vendored manifest that was red on Windows and green in
+# Linux CI). Robustness by design plus robustness by attribute costs nothing; being
+# wrong about which one you had costs a trust product its credibility.
+stream/** -text
+vectors/** -text
