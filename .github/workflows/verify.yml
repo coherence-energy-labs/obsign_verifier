@@ -64,10 +64,17 @@ jobs:
       - name: Conformance vectors must reproduce bit-for-bit
         shell: python
         run: |
-          import json, pathlib, platform, sys
+          import json, platform, sys
+          from obsign_verify import data_path
           from obsign_verify.kernel import array_sha256, build_fixed_inputs, evolve
 
-          cases = json.loads(pathlib.Path("vectors/conformance_vectors.json")
+          # data_path(), NOT a repo-relative path. The vectors and bundles moved INSIDE
+          # the package so a `pip install` gives a stranger everything the README tells
+          # them to run -- this file kept reading `vectors/...` afterwards and every
+          # matrix job died with FileNotFoundError. Reading the installed package is
+          # also the stricter check: it tests what ships, not what happens to be in the
+          # working directory.
+          cases = json.loads(data_path("conformance_vectors.json")
                              .read_text(encoding="utf-8"))
           assert cases, "no conformance vectors -- this check would be vacuous"
 
@@ -86,10 +93,10 @@ jobs:
       - name: The shipped forgeries must still be refused
         shell: python
         run: |
-          import pathlib, sys
-          from obsign_verify import load_receipt, verify
+          import sys
+          from obsign_verify import data_path, load_receipt, verify
 
-          bundles = sorted(pathlib.Path("challenge/bundles").glob("*/receipt.json"))
+          bundles = sorted(data_path("challenge", "bundles").glob("*/receipt.json"))
           assert len(bundles) >= 9, f"only {len(bundles)} bundle(s) -- check would be vacuous"
           wrong = []
           for p in bundles:
@@ -108,7 +115,7 @@ jobs:
       - name: The CLI must work as documented
         run: |
           obsign-verify --version
-          obsign-verify challenge/bundles/valid/receipt.json
+          obsign-verify --self-check
 
   gates:
     name: doc gates
@@ -146,15 +153,28 @@ jobs:
         shell: python
         run: |
           import pathlib, sys
+          from obsign_verify import data_path
           # Two byte-pins in this estate were broken by line-ending conversion in a
           # single day. The receipts here are robust by design, but being wrong about
           # WHICH kind of robustness you have is the part that costs credibility.
+          #
+          # `challenge/bundles` and `vectors` moved INSIDE the package. This check kept
+          # globbing the old repo paths, which matched nothing -- and `assert pinned`
+          # still PASSED, because stream/ alone is non-empty. It silently checked 5
+          # files while reporting on all of them. Assert the COUNT, never just
+          # non-emptiness: a partially-vacuous check reads exactly like a whole one.
           crlf = bytes([13, 10])
-          pinned = (list(pathlib.Path("stream").glob("*.json"))
-                    + list(pathlib.Path("challenge/bundles").glob("*/receipt.json"))
-                    + list(pathlib.Path("vectors").glob("*.json")))
-          assert pinned, "no pinned artifacts found -- this check would be vacuous"
+          groups = {
+              "stream": list(pathlib.Path("stream").glob("*.json")),
+              "bundles": list(data_path("challenge", "bundles").glob("*/receipt.json")),
+              "vectors": [data_path("conformance_vectors.json")],
+          }
+          for name, files in groups.items():
+              assert files, f"'{name}' matched NOTHING -- this check would be vacuous"
+          assert len(groups["bundles"]) >= 9, f"only {len(groups['bundles'])} bundle(s)"
+          pinned = [p for fs in groups.values() for p in fs]
           bad = [str(p) for p in pinned if crlf in p.read_bytes()]
           if bad:
               sys.exit(f"CRLF in byte-pinned artifacts: {bad}")
-          print(f"{len(pinned)} pinned artifact(s), no CRLF")
+          print(f"{len(pinned)} pinned artifact(s) across "
+                f"{ {k: len(v) for k, v in groups.items()} }, no CRLF")

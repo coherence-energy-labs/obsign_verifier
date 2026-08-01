@@ -10,5 +10,15 @@
 # Linux CI). Robustness by design plus robustness by attribute costs nothing; being
 # wrong about which one you had costs a trust product its credibility.
 stream/** -text
-vectors/** -text
-challenge/** -text
+
+# The vectors and the challenge bundles MOVED into the package so that a `pip install`
+# gives a stranger everything the README tells them to run. The rules protecting them
+# did not move with them: `vectors/**` and `challenge/**` matched nothing afterwards,
+# and `git ls-files --eol` showed the vectors as `i/lf w/crlf attr/` -- silently
+# unprotected, and silently converted in the working tree.
+#
+# A path-based rule is a dangling pointer the moment the path moves, and nothing
+# announces it. The CI check that should have caught this had the same stale paths and
+# still passed, because it asserted its file list was non-empty rather than asserting
+# its COUNT -- stream/ alone kept it green while it checked 5 files of 14.
+src/obsign_verify/data/** -text
