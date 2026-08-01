@@ -11,3 +11,4 @@
 # wrong about which one you had costs a trust product its credibility.
 stream/** -text
 vectors/** -text
+challenge/** -text
