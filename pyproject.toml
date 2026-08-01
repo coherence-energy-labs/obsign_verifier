@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# NAME IS PROVISIONAL AND THIS PACKAGE MUST NOT BE PUBLISHED UNDER IT.
+# PROGRAM.md §2.3.2: the `obsign` name on PyPI is held by a placeholder that is not
+# ours. Decision D-02 picks the launch name and takes the registries, the domain and
+# the org handle BEFORE any announcement. Renaming here is a one-line change; taking
+# a name someone else already holds is not.
+name = "obsign-verify"
+version = "0.1.0"
+description = "Re-derive an Obsign receipt's claim on your own machine, offline."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Coherence Energy Labs" }]
+keywords = ["provenance", "receipts", "verification", "determinism", "reproducibility"]
+
+# numpy only. A verifier a stranger is asked to trust should be auditable in an
+# afternoon, and every dependency is something else they have to trust.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# Signature checking is optional BY DESIGN. Integrity and re-derivation -- the two
+# steps that make this more than attestation -- need no crypto library at all, so a
+# stranger can verify the number with numpy and nothing else.
+sig = ["cryptography>=41"]
+dev = ["pytest>=7", "cryptography>=41"]
+
+[project.scripts]
+obsign-verify = "obsign_verify.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+obsign_verify = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

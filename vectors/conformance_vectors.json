@@ -1,0 +1,100 @@
+[
+  {
+    "name": "v1_basic",
+    "params": {
+      "grid": 64,
+      "steps": 100,
+      "D": 0.14,
+      "gamma": 0.02,
+      "dt": 0.15,
+      "frac_bits": 24,
+      "sources": [
+        [
+          0.3,
+          0.3,
+          0.11,
+          0.01
+        ],
+        [
+          0.7,
+          0.7,
+          0.16,
+          0.008
+        ]
+      ]
+    },
+    "output_sha256": "a50bef430f745b12111225eed12cd0e4f86119ccb0fb47a878ed1f61d50b3ea3"
+  },
+  {
+    "name": "v2_fast_decay",
+    "params": {
+      "grid": 48,
+      "steps": 200,
+      "D": 0.1,
+      "gamma": 0.08,
+      "dt": 0.12,
+      "frac_bits": 24,
+      "sources": [
+        [
+          0.5,
+          0.5,
+          0.2,
+          0.02
+        ]
+      ]
+    },
+    "output_sha256": "87eb77725c79d374978c60f7704d1d51a8bfefca551426d98c0dcd09ac912f33"
+  },
+  {
+    "name": "v3_three_src",
+    "params": {
+      "grid": 96,
+      "steps": 150,
+      "D": 0.14,
+      "gamma": 0.02,
+      "dt": 0.15,
+      "frac_bits": 24,
+      "sources": [
+        [
+          0.25,
+          0.25,
+          0.11,
+          0.01
+        ],
+        [
+          0.75,
+          0.75,
+          0.16,
+          0.008
+        ],
+        [
+          0.55,
+          0.25,
+          0.09,
+          0.012
+        ]
+      ]
+    },
+    "output_sha256": "fe029388622ab14f0ba979cb239a16587098961db75dd2e8679366738937a634"
+  },
+  {
+    "name": "v4_finer_scale",
+    "params": {
+      "grid": 64,
+      "steps": 120,
+      "D": 0.18,
+      "gamma": 0.03,
+      "dt": 0.1,
+      "frac_bits": 26,
+      "sources": [
+        [
+          0.4,
+          0.6,
+          0.13,
+          0.015
+        ]
+      ]
+    },
+    "output_sha256": "397f718c7de9c54304304de0a962e91a0a37ff9928ccb83915935c311e526932"
+  }
+]
