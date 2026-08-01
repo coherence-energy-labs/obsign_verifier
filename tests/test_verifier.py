@@ -7,6 +7,7 @@ verifier still runs, still prints something confident, and is wrong.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -288,3 +289,38 @@ def test_a_receipt_survives_line_ending_conversion():
     assert crlf != lf, "fixture was already CRLF -- the test would prove nothing"
     for form in (lf, crlf):
         assert verify(load_receipt(form.decode("utf-8")))["verified"] is True
+
+
+# ------------------------------------------------------- the Wave-3 GRC mapping
+
+def test_the_compliance_mapping_matches_its_document():
+    """Derive, never transcribe. The hand-written version of this artifact in a
+    sibling repo had already gone stale against its own code, listing neither SOC 2
+    nor the ISO/IEC 42001 controls that existed in the mapping. An auditor quotes
+    the doc, so the doc must not be able to drift from the module."""
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    for args in (["--self-test"], []):
+        proc = subprocess.run([sys.executable, str(root / "tools" / "compliance_map.py"), *args],
+                              capture_output=True, text=True, timeout=600, cwd=str(root))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_no_framework_is_claimed_without_stating_its_limits():
+    """Structural honesty, enforced rather than intended.
+
+    A mapping that listed what a receipt evidences and omitted what it does not is
+    advocacy. Requiring every framework to appear in BOTH tables makes the
+    not-covered list impossible to quietly drop.
+    """
+    import importlib.util
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("cmap", root / "tools" / "compliance_map.py")
+    cmap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cmap)
+
+    evidenced = {fw for rows in cmap.CONTROLS.values() for fw, _c, _r in rows}
+    uncovered = {fw for fw, _c, _r in cmap.NOT_COVERED}
+    assert evidenced, "no frameworks mapped -- this assertion would be vacuous"
+    assert evidenced <= uncovered, f"claimed without limits: {sorted(evidenced - uncovered)}"
+    assert set(cmap.FRAMEWORKS) == evidenced | uncovered
