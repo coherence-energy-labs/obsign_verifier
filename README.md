@@ -91,8 +91,18 @@ source term, and it is rounded to int64 before any evolution — so a last-ulp l
 difference is absorbed rather than compounded.
 
 Honest residual risk, stated rather than hidden: a source value sitting exactly on a
-`.5` rounding boundary could round differently under a different libm. Not observed
-across the platforms tested; not proven impossible.
+`.5` rounding boundary could round differently under a different libm. **Not proven
+impossible** — but now genuinely measured rather than assumed.
+
+CI runs the conformance vectors on **x86_64 Linux, ARM64 macOS and Windows**, across
+four Python versions, and prints the actual output hashes on every runner. The
+architecture split is the load-bearing part: `aarch64` and `x86_64` ship different libm
+implementations, and if that risk were going to bite, that is where it would.
+
+When this sentence was first written it said "not observed across the platforms tested"
+and exactly one platform had been tested — true, and nearly empty. If the hashes ever
+diverge between two runners, the job fails and says so, because that divergence is the
+finding, not an inconvenience.
 
 ## Status
 

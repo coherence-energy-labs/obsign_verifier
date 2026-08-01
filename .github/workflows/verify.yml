@@ -1,0 +1,144 @@
+name: verify
+
+# THE CLAIM THIS WORKFLOW EXISTS TO BACK
+#
+# The README says the number re-derives to identical bits on the reader's hardware, and
+# states one honest residual risk: a source value sitting exactly on a .5 rounding
+# boundary could round differently under a different libm -- "not observed across the
+# platforms tested; not proven impossible."
+#
+# When that sentence was written, ONE platform had been tested. "Not observed across the
+# platforms tested" was true and nearly empty, which is the kind of true-and-empty
+# sentence this estate keeps finding and killing.
+#
+# This runs the conformance vectors on x86_64 Linux, ARM64 macOS and Windows, across
+# four Python versions. The architecture split is the load-bearing part: aarch64 and
+# x86_64 have different libm implementations, and if the .5-boundary risk were going to
+# bite, that is where it would.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crossplatform:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false          # one platform failing must not hide the others
+      matrix:
+        # macos-14 is Apple silicon: ARM64, a genuinely different libm from the
+        # x86_64 runners. Without it this matrix would be three flavours of one
+        # architecture and would prove far less than it appears to.
+        os: [ubuntu-latest, macos-14, windows-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      - name: Test suite
+        run: python -m pytest -q
+
+      - name: Report the architecture actually being tested
+        shell: python
+        run: |
+          import platform, sys
+          print(f"machine={platform.machine()}  system={platform.system()}  "
+                f"python={sys.version.split()[0]}")
+
+      # The load-bearing step. Not "the tests passed" -- the actual output hashes,
+      # printed, so a divergence between two runners is visible in the log rather than
+      # only in a red X. If these ever differ across the matrix, that IS the finding.
+      - name: Conformance vectors must reproduce bit-for-bit
+        shell: python
+        run: |
+          import json, pathlib, platform, sys
+          from obsign_verify.kernel import array_sha256, build_fixed_inputs, evolve
+
+          cases = json.loads(pathlib.Path("vectors/conformance_vectors.json")
+                             .read_text(encoding="utf-8"))
+          assert cases, "no conformance vectors -- this check would be vacuous"
+
+          bad = 0
+          print(f"--- {platform.machine()} / {platform.system()} ---")
+          for c in cases:
+              got = array_sha256(evolve(build_fixed_inputs(c["params"])))
+              ok = got == c["output_sha256"]
+              bad += not ok
+              print(f"  {'ok  ' if ok else 'DIFF'} {c['name']:<18} {got}")
+          if bad:
+              sys.exit(f"{bad} vector(s) diverged on this platform -- this is the "
+                       f"residual libm risk the README names, and it is now OBSERVED")
+          print(f"all {len(cases)} vectors bit-identical here")
+
+      - name: The shipped forgeries must still be refused
+        shell: python
+        run: |
+          import pathlib, sys
+          from obsign_verify import load_receipt, verify
+
+          bundles = sorted(pathlib.Path("challenge/bundles").glob("*/receipt.json"))
+          assert len(bundles) >= 9, f"only {len(bundles)} bundle(s) -- check would be vacuous"
+          wrong = []
+          for p in bundles:
+              r = load_receipt(p.read_text(encoding="utf-8"))
+              want = r.get("_challenge", {}).get("expect_verified")
+              got = verify(r)["verified"]
+              if got is not want:
+                  wrong.append(f"{p.parent.name}: expected {want}, got {got}")
+          if wrong:
+              sys.exit("verdict mismatch on this platform:\n  " + "\n  ".join(wrong))
+          print(f"all {len(bundles)} bundles got their declared verdict")
+
+      - name: The published stream must re-derive here
+        run: python tools/dogfood.py --check
+
+      - name: The CLI must work as documented
+        run: |
+          obsign-verify --version
+          obsign-verify challenge/bundles/valid/receipt.json
+
+  gates:
+    name: doc gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      - name: The GRC mapping must match its document
+        run: |
+          python tools/compliance_map.py --self-test
+          python tools/compliance_map.py
+
+      - name: Byte-pinned artifacts must contain no CRLF
+        shell: python
+        run: |
+          import pathlib, sys
+          # Two byte-pins in this estate were broken by line-ending conversion in a
+          # single day. The receipts here are robust by design, but being wrong about
+          # WHICH kind of robustness you have is the part that costs credibility.
+          crlf = bytes([13, 10])
+          pinned = (list(pathlib.Path("stream").glob("*.json"))
+                    + list(pathlib.Path("challenge/bundles").glob("*/receipt.json"))
+                    + list(pathlib.Path("vectors").glob("*.json")))
+          assert pinned, "no pinned artifacts found -- this check would be vacuous"
+          bad = [str(p) for p in pinned if crlf in p.read_bytes()]
+          if bad:
+              sys.exit(f"CRLF in byte-pinned artifacts: {bad}")
+          print(f"{len(pinned)} pinned artifact(s), no CRLF")
