@@ -231,3 +231,38 @@ def test_an_unknown_algorithm_is_refused_not_ignored():
     sig = verify(r)["signature"]
     assert sig["valid"] is False
     assert "UNVERIFIED" in sig["detail"]
+
+
+# ------------------------------------------------------- the published stream
+
+def test_the_dogfood_stream_verifies_and_is_not_empty():
+    """We publish receipts about our own numbers. If the page ever shipped a
+    receipt that does not re-derive, the product's central claim is refuted by its
+    own marketing -- so this is a test, not a nice-to-have.
+
+    Fails closed on an empty stream: an assertion over zero receipts passes for any
+    input, which is exactly how a dogfood page would come to prove nothing.
+    """
+    stream = Path(__file__).resolve().parents[1] / "stream"
+    if not stream.is_dir():
+        pytest.skip("stream not built (run tools/dogfood.py)")
+    receipts = sorted(p for p in stream.glob("*.json") if p.name != "index.json")
+    assert len(receipts) >= 4, "stream is empty or truncated -- this check would be vacuous"
+    for path in receipts:
+        res = verify(load_receipt(path.read_text(encoding="utf-8")))
+        assert res["verified"] is True, f"{path.name}: {res['notes']}"
+
+
+def test_recording_env_does_not_change_the_receipt_hash():
+    """`env` is outside the claim by spec. That is what lets the same receipt
+    re-derive on a different OS while still disclosing where it ran -- and it is
+    the property the published stream is demonstrating."""
+    stream = Path(__file__).resolve().parents[1] / "stream"
+    if not stream.is_dir():
+        pytest.skip("stream not built")
+    r = load_receipt((stream / "v1_basic.json").read_text(encoding="utf-8"))
+    assert "env" in r, "the stream should disclose its environment"
+    before = r["receipt_sha256"]
+    r["env"] = {"os": "something-else-entirely", "python": "0.0"}
+    assert canonical_sha256(claim_of(r)) == before
+    assert verify(r)["verified"] is True

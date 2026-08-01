@@ -1,0 +1,48 @@
+{
+  "env": {
+    "numpy": "2.3.5",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3"
+  },
+  "input": {
+    "sha256": "9ffcd66ce55be86c1a18b0c605d07db12dc515e86843f6570e4993920d57f434"
+  },
+  "kernel": "tau_field_fixed",
+  "output": {
+    "dtype": "int64",
+    "sha256": "a50bef430f745b12111225eed12cd0e4f86119ccb0fb47a878ed1f61d50b3ea3",
+    "shape": [
+      64,
+      64
+    ]
+  },
+  "params": {
+    "D": 0.14,
+    "dt": 0.15,
+    "frac_bits": 24,
+    "gamma": 0.02,
+    "grid": 64,
+    "sources": [
+      [
+        0.3,
+        0.3,
+        0.11,
+        0.01
+      ],
+      [
+        0.7,
+        0.7,
+        0.16,
+        0.008
+      ]
+    ],
+    "steps": 100
+  },
+  "producer": "obsign-verify/0.1.0 (dogfood)",
+  "receipt_sha256": "d7fdae88f5f7e2d830c39edc770de780248fecd61cffdaa680ddd4a2567a1a8c",
+  "run": {
+    "case": "v1_basic",
+    "steps": 100
+  },
+  "spec": "obsign/receipt/v1"
+}

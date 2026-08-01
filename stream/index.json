@@ -1,0 +1,25 @@
+{
+  "spec": "obsign/stream/v1",
+  "receipts": [
+    {
+      "file": "v1_basic.json",
+      "receipt_sha256": "d7fdae88f5f7e2d830c39edc770de780248fecd61cffdaa680ddd4a2567a1a8c",
+      "output_sha256": "a50bef430f745b12111225eed12cd0e4f86119ccb0fb47a878ed1f61d50b3ea3"
+    },
+    {
+      "file": "v2_fast_decay.json",
+      "receipt_sha256": "0945caa4bc011c18dcd79e248a193ee0f94f32d1f3038806b6154108b6d6fcc6",
+      "output_sha256": "87eb77725c79d374978c60f7704d1d51a8bfefca551426d98c0dcd09ac912f33"
+    },
+    {
+      "file": "v3_three_src.json",
+      "receipt_sha256": "2863a7cbbe6abaadc8e34790187cd232b6540a54190531aa31c1088fb9a9000a",
+      "output_sha256": "fe029388622ab14f0ba979cb239a16587098961db75dd2e8679366738937a634"
+    },
+    {
+      "file": "v4_finer_scale.json",
+      "receipt_sha256": "61f935fed69811e589708903bc3e684307ad8405b0e897a1b26f4acd8815f985",
+      "output_sha256": "397f718c7de9c54304304de0a962e91a0a37ff9928ccb83915935c311e526932"
+    }
+  ]
+}
