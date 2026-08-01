@@ -396,3 +396,45 @@ def test_self_check_refuses_every_forgery_and_exits_zero():
     verify() directly would test a path nobody uses."""
     from obsign_verify.cli import main
     assert main(["--self-check", "--quiet"]) == 0
+
+
+def test_version_matches_pyproject():
+    """The version lives in two files. Hold them together or one will lie.
+
+    `__init__.__version__` is a literal so `--version` works from an uninstalled source
+    tree, which means pyproject.toml has a second copy. Nobody notices a stale
+    `--version`: it prints confidently and is wrong, which is this file's whole subject.
+    """
+    import re
+
+    from obsign_verify import __version__
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+    assert m, "no version = \"...\" in pyproject.toml -- this test would be vacuous"
+    assert m.group(1) == __version__, (
+        f"pyproject says {m.group(1)}, package says {__version__}"
+    )
+
+
+def test_declared_urls_are_not_the_private_repo():
+    """A dead link on a provenance tool's own page costs more than a missing one.
+
+    0.1.0 shipped with no [project.urls] at all, so pypi.org/project/obsign-verify had
+    nothing pointing back at us -- a stranger invited to check our claims had nowhere to
+    go. The fix must not overcorrect into links that 404: the GitHub repo is private, so
+    Source/Issues stay out until it opens.
+    """
+    import re
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8")
+    block = re.search(r"(?ms)^\[project\.urls\](.*?)(?=^\[|\Z)", pyproject)
+    assert block, "no [project.urls] -- the PyPI page would have no link back to us"
+    urls = re.findall(r'=\s*"([^"]+)"', block.group(1))
+    assert urls, "[project.urls] is empty"
+    leaked = [u for u in urls if "github.com" in u]
+    assert not leaked, (
+        f"links to the private repo would 404 for every stranger: {leaked}")
+    assert all(u.startswith("https://") for u in urls), f"non-https url: {urls}"

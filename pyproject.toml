@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 # This package is the VERIFIER, not the engine, so the longer name is the accurate one
 # regardless: it says what you install and what it does.
 name = "obsign-verify"
-version = "0.1.0"
+version = "0.1.1"
 description = "Re-derive an Obsign receipt's claim on your own machine, offline."
 readme = "README.md"
 license = "Apache-2.0"
@@ -25,6 +25,26 @@ keywords = ["provenance", "receipts", "verification", "determinism", "reproducib
 # numpy only. A verifier a stranger is asked to trust should be auditable in an
 # afternoon, and every dependency is something else they have to trust.
 dependencies = ["numpy>=1.24"]
+
+# 0.1.0 shipped with NO urls table at all, so the PyPI page had zero links: a stranger
+# who landed there could not reach us, read the spec, or report a break. For a product
+# whose next gate is "one logged stranger attestation", that was a direct blocker --
+# the artifact invited scrutiny and then gave it nowhere to go.
+#
+# Every URL below returned 200 when this table was written. `Source` and `Issues` are
+# deliberately ABSENT: the repository is still private, and a dead link on a provenance
+# tool's own page costs more credibility than a missing one. They go in when it opens.
+#
+# THIS TABLE MUST STAY BELOW EVERY BARE `project` KEY. TOML tables run until the next
+# header, so putting it directly after `keywords` silently captured `dependencies` as
+# `project.urls.dependencies` -- caught only because the build refused. Editing the file
+# is not the check; building the artifact is.
+[project.urls]
+Homepage = "https://obsign.io"
+Documentation = "https://obsign.io/docs/"
+"Verify a receipt" = "https://obsign.io/verify/"
+"Report a break" = "https://obsign.io/security/"
+Changelog = "https://obsign.io/changelog/"
 
 [project.optional-dependencies]
 # Signature checking is optional BY DESIGN. Integrity and re-derivation -- the two

@@ -12,7 +12,11 @@ from .canonical import canonical_sha256, claim_of, load_receipt
 from .verify import verify
 
 __all__ = ["verify", "load_receipt", "claim_of", "canonical_sha256", "__version__"]
-__version__ = "0.1.0"
+# Kept as a literal rather than read from package metadata so `--version` still answers
+# correctly from a source tree nobody installed. That makes it a SECOND copy of the
+# version, which is a drift waiting to happen -- so test_version_matches_pyproject holds
+# it to the value in pyproject.toml and fails the build if the two ever disagree.
+__version__ = "0.1.1"
 
 
 def data_path(*parts: str):
