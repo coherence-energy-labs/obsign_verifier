@@ -37,15 +37,61 @@ def _report(path: Path, res: dict, quiet: bool) -> None:
         print(f"      - {note}")
 
 
+def _self_check(quiet: bool) -> int:
+    """Run the challenge that ships INSIDE the package.
+
+    A stranger who `pip install`ed has no `challenge/` directory to point at, so the
+    README's "run the forgeries" instruction was unfollowable for exactly the people
+    it was written for. This needs no files of their own and no arguments.
+
+    Exit 0 means every bundle got the verdict it declares -- the honest ones
+    verified, and every forgery refused. Refusing the forgeries is the job, so a
+    clean run is NOT "9 verified".
+    """
+    from . import data_path
+    bundles = sorted(data_path("challenge", "bundles").glob("*/receipt.json"))
+    if not bundles:
+        print("no bundles shipped with this package -- the install is incomplete",
+              file=sys.stderr)
+        return 1
+
+    wrong = 0
+    for path in bundles:
+        receipt = load_receipt(path.read_text(encoding="utf-8"))
+        declared = receipt.get("_challenge", {}).get("expect_verified")
+        got = verify(receipt)["verified"]
+        ok = got is declared
+        wrong += not ok
+        if not quiet:
+            print(f"  {'ok  ' if ok else '!!  '}{path.parent.name:<36}"
+                  f"{'VERIFIED' if got else 'REFUSED':<9}"
+                  f"(expected {'VERIFIED' if declared else 'REFUSED'})")
+    if not quiet:
+        n = len(bundles)
+        print()
+        print(f"{n - wrong}/{n} bundles behaved as declared."
+              + ("" if wrong else "  Every forgery was refused, including the resealed"
+                                  " one whose signature is intact and whose claim is false."))
+    return 1 if wrong else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="obsign-verify",
         description="Re-derive an Obsign receipt's claim on your own machine.")
-    ap.add_argument("receipts", nargs="+", type=Path)
+    ap.add_argument("receipts", nargs="*", type=Path)
+    ap.add_argument("--self-check", action="store_true",
+                    help="verify the bundled challenge: 2 honest receipts and 7 "
+                         "forgeries that must be refused. Needs no files of your own.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--version", action="version", version=f"obsign-verify {__version__}")
     args = ap.parse_args(argv)
+
+    if args.self_check:
+        return _self_check(args.quiet)
+    if not args.receipts:
+        ap.error("give one or more receipt files, or --self-check")
 
     report, failures = [], 0
     for path in args.receipts:

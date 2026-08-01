@@ -67,16 +67,22 @@ The package ships the same `conformance_vectors.json` the engine is judged again
 $ pip install 'obsign-verify[dev]' && pytest
 ```
 
-**The forgeries ship with the package.** Nine bundles — two that must verify and
-seven that must be refused — live in `challenge/bundles/`, so you get them in the
-same clone as the verifier. Nothing to request, nothing behind a login:
+**The forgeries ship inside the package.** One command, no files of your own, no
+login, no request:
 
 ```console
-$ obsign-verify challenge/bundles/*/receipt.json
+$ obsign-verify --self-check
+
+  ok  env_only_change_must_still_verify   VERIFIED (expected VERIFIED)
+  ok  forged_input_hash                   REFUSED  (expected REFUSED)
+  ok  resealed_tampered_claim             REFUSED  (expected REFUSED)
+  ...
+9/9 bundles behaved as declared.
 ```
 
-Exit `1` is the correct result: seven of the nine are forgeries and refusing them is
-the job. `challenge/ATTESTATION.md` says what each one attacks.
+Exit `0` means every bundle got the verdict it declares — the two honest receipts
+verified and **all seven forgeries refused.** Refusing them is the job, so a clean
+run is not "9 verified".
 
 The one to look at is `resealed_tampered_claim`. Its output was edited, its receipt
 re-hashed, its signature re-applied — so it passes the integrity check cleanly and

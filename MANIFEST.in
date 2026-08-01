@@ -1,0 +1,7 @@
+# The sdist must be self-contained: someone auditing the source should get the
+# tests and the artifacts those tests judge against, not just the modules.
+include LICENSE README.md
+recursive-include src/obsign_verify/data *
+recursive-include tests *.py
+recursive-include docs *.md
+recursive-include tools *.py

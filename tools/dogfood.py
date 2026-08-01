@@ -40,7 +40,8 @@ from obsign_verify import __version__, verify                    # noqa: E402
 from obsign_verify.canonical import canonical_sha256, load_receipt  # noqa: E402
 from obsign_verify.kernel import array_sha256, build_fixed_inputs, evolve  # noqa: E402
 
-VECTORS = ROOT / "vectors" / "conformance_vectors.json"
+from obsign_verify import data_path                            # noqa: E402
+VECTORS = data_path("conformance_vectors.json")
 STREAM = ROOT / "stream"
 
 

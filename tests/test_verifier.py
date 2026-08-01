@@ -12,13 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from obsign_verify import canonical_sha256, claim_of, load_receipt, verify
+from obsign_verify import canonical_sha256, claim_of, data_path, load_receipt, verify
 from obsign_verify.canonical import canonical_bytes, integrity
 from obsign_verify.kernel import array_sha256, build_fixed_inputs, evolve
 
 VECTORS = json.loads(
-    (Path(__file__).resolve().parents[1] / "vectors" / "conformance_vectors.json")
-    .read_text(encoding="utf-8"))
+    data_path("conformance_vectors.json").read_text(encoding="utf-8"))
 
 
 # ------------------------------------------------------------------ the kernel
@@ -336,7 +335,7 @@ def test_the_challenge_is_self_contained_in_THIS_repo():
     the only person it was written for. A README that documents an impossible command
     is worse than one that documents nothing.
     """
-    bundles = sorted((Path(__file__).resolve().parents[1] / "challenge" / "bundles")
+    bundles = sorted(data_path("challenge", "bundles")
                      .glob("*/receipt.json"))
     assert len(bundles) >= 9, f"only {len(bundles)} bundle(s) present in this repo"
 
@@ -344,7 +343,7 @@ def test_the_challenge_is_self_contained_in_THIS_repo():
 def test_every_shipped_bundle_gets_the_verdict_it_declares():
     """Each bundle states its own expectation in `_challenge.expect_verified`, and the
     verifier must agree with all nine. Two must verify, seven must be refused."""
-    bundles = sorted((Path(__file__).resolve().parents[1] / "challenge" / "bundles")
+    bundles = sorted(data_path("challenge", "bundles")
                      .glob("*/receipt.json"))
     assert bundles, "no bundles -- this assertion would be vacuous"
     expected_true = 0
@@ -366,9 +365,34 @@ def test_the_resealed_forgery_survives_integrity_and_dies_on_re_derivation():
     If this one ever failed on INTEGRITY instead, it would stop demonstrating why
     step 2 exists -- and the whole product argument rests on it.
     """
-    path = (Path(__file__).resolve().parents[1] / "challenge" / "bundles"
-            / "resealed_tampered_claim" / "receipt.json")
+    path = data_path("challenge", "bundles", "resealed_tampered_claim", "receipt.json")
     res = verify(load_receipt(path.read_text(encoding="utf-8")))
     assert res["integrity"] is True, "must pass step 1 or it proves nothing"
     assert res["reproduced"] is False
     assert res["verified"] is False
+
+
+def test_the_package_ships_everything_the_readme_tells_you_to_run():
+    """A pip install must be self-contained.
+
+    The first build shipped NEITHER the conformance vectors NOR the challenge
+    bundles, so both commands the README gave a stranger -- run the forgeries, run
+    pytest -- failed for exactly the people they were written for. Caught by
+    inspecting the sdist before publishing, not after.
+
+    This asserts against the INSTALLED package location, so it fails if the data
+    stops being packaged even while the repo copy is still present.
+    """
+    from obsign_verify import data_path
+    vectors = data_path("conformance_vectors.json")
+    assert vectors.is_file(), "conformance vectors are not packaged"
+    bundles = sorted(data_path("challenge", "bundles").glob("*/receipt.json"))
+    assert len(bundles) >= 9, f"only {len(bundles)} bundle(s) packaged"
+
+
+def test_self_check_refuses_every_forgery_and_exits_zero():
+    """`obsign-verify --self-check` is the one command a stranger runs. Exercised
+    through the CLI entry point, because that is what they invoke -- calling
+    verify() directly would test a path nobody uses."""
+    from obsign_verify.cli import main
+    assert main(["--self-check", "--quiet"]) == 0

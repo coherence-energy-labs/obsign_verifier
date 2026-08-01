@@ -13,3 +13,15 @@ from .verify import verify
 
 __all__ = ["verify", "load_receipt", "claim_of", "canonical_sha256", "__version__"]
 __version__ = "0.1.0"
+
+
+def data_path(*parts: str):
+    """Absolute path to a file shipped INSIDE the package.
+
+    The conformance vectors and the challenge bundles are package data, not repo
+    files. A `pip install` has to give a stranger everything the README tells them
+    to run -- the first cut shipped neither, so `obsign-verify challenge/...` and
+    `pytest` both failed for anyone who installed rather than cloned.
+    """
+    from pathlib import Path
+    return Path(__file__).resolve().parent.joinpath("data", *parts)

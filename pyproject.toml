@@ -40,7 +40,12 @@ obsign-verify = "obsign_verify.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-obsign_verify = ["py.typed"]
+# The vectors and the challenge bundles are PACKAGE DATA, not repo files. A
+# `pip install` must give a stranger everything the README tells them to run --
+# the first cut of this file shipped neither, so both documented commands failed
+# for anyone who installed instead of cloning. ~64 KB, and it is the whole point
+# of the product: hand the sceptic the forgeries in the same breath as the tool.
+obsign_verify = ["py.typed", "data/*.json", "data/challenge/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
