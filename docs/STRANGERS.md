@@ -87,8 +87,11 @@ The interesting attacks are not on the cryptography:
 
 - **Find a platform where the bytes differ.** The honest residual risk is stated in the
   README: a source value sitting exactly on a `.5` rounding boundary could round
-  differently under a different libm. Not observed; not proven impossible. Finding one
-  would be a genuine result and we would publish it here as such.
+  differently under a different libm. **Not proven impossible**, and now genuinely
+  measured: CI runs the vectors on x86_64 Linux, ARM64 macOS and Windows and prints the
+  hashes, and `arm64/Darwin` matches `AMD64/Windows` byte for byte. Different libm, same
+  bits. Finding a platform where that breaks would be a genuine result and we would
+  publish it here as such.
 - **Find a forgery the verifier accepts.** That breaks the scheme, not the tool.
 - **Find a valid receipt it refuses.** Equally serious in the other direction — a
   verifier that cries wolf is one people stop running.
