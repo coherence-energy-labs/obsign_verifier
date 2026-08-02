@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 # This package is the VERIFIER, not the engine, so the longer name is the accurate one
 # regardless: it says what you install and what it does.
 name = "obsign-verify"
-version = "0.1.1"
+version = "0.1.2"
 description = "Re-derive an Obsign receipt's claim on your own machine, offline."
 readme = "README.md"
 license = "Apache-2.0"
@@ -31,9 +31,16 @@ dependencies = ["numpy>=1.24"]
 # whose next gate is "one logged stranger attestation", that was a direct blocker --
 # the artifact invited scrutiny and then gave it nowhere to go.
 #
-# Every URL below returned 200 when this table was written. `Source` and `Issues` are
-# deliberately ABSENT: the repository is still private, and a dead link on a provenance
-# tool's own page costs more credibility than a missing one. They go in when it opens.
+# Every URL below returned 200 when this table was written -- `Source` and `Issues`
+# checked ANONYMOUSLY, without a token, because "reachable by me" and "reachable by a
+# stranger" are different claims and only the second one matters here.
+#
+# 0.1.1 shipped without Source/Issues on purpose: the repository was private, and a
+# dead link on a provenance tool's own page costs more credibility than a missing one.
+# It went public 2026-08-01 once the credential in its history was ROTATED -- not when
+# the history was rewritten. Force-push does not unpublish; GitHub still serves
+# orphaned objects by SHA, so publishing the repo before rotation would have handed
+# out a working key.
 #
 # THIS TABLE MUST STAY BELOW EVERY BARE `project` KEY. TOML tables run until the next
 # header, so putting it directly after `keywords` silently captured `dependencies` as
@@ -45,6 +52,8 @@ Documentation = "https://obsign.io/docs/"
 "Verify a receipt" = "https://obsign.io/verify/"
 "Report a break" = "https://obsign.io/security/"
 Changelog = "https://obsign.io/changelog/"
+Source = "https://github.com/coherence-energy-labs/obsign_verifier"
+Issues = "https://github.com/coherence-energy-labs/obsign_verifier/issues"
 
 [project.optional-dependencies]
 # Signature checking is optional BY DESIGN. Integrity and re-derivation -- the two

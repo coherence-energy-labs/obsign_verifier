@@ -418,13 +418,24 @@ def test_version_matches_pyproject():
     )
 
 
-def test_declared_urls_are_not_the_private_repo():
-    """A dead link on a provenance tool's own page costs more than a missing one.
+def test_a_stranger_can_reach_the_source_and_report_a_break():
+    """The package must point back at something a stranger can actually open.
 
     0.1.0 shipped with no [project.urls] at all, so pypi.org/project/obsign-verify had
-    nothing pointing back at us -- a stranger invited to check our claims had nowhere to
-    go. The fix must not overcorrect into links that 404: the GitHub repo is private, so
-    Source/Issues stay out until it opens.
+    nothing pointing back at us -- a package whose entire pitch is "do not trust us,
+    check" and no way to check who "us" is.
+
+    0.1.1 added five obsign.io links but deliberately WITHHELD Source and Issues,
+    because the repository was private and a link that 404s on a provenance tool's own
+    page costs more credibility than a missing one.
+
+    0.1.2 adds them: the repo went public once the credential in its history was
+    ROTATED. Not when the history was rewritten -- force-push does not unpublish, and
+    GitHub still serves orphaned objects by SHA, so publishing before rotation would
+    have handed a working key to anyone who knew the old commit id.
+
+    This test pins the invariant that survived all three: every declared URL is https,
+    and the two that let a stranger read the source and report a break are present.
     """
     import re
 
@@ -432,9 +443,17 @@ def test_declared_urls_are_not_the_private_repo():
         encoding="utf-8")
     block = re.search(r"(?ms)^\[project\.urls\](.*?)(?=^\[|\Z)", pyproject)
     assert block, "no [project.urls] -- the PyPI page would have no link back to us"
-    urls = re.findall(r'=\s*"([^"]+)"', block.group(1))
-    assert urls, "[project.urls] is empty"
-    leaked = [u for u in urls if "github.com" in u]
-    assert not leaked, (
-        f"links to the private repo would 404 for every stranger: {leaked}")
-    assert all(u.startswith("https://") for u in urls), f"non-https url: {urls}"
+
+    pairs = dict(re.findall(r'(?m)^"?([^"=\n]+?)"?\s*=\s*"([^"]+)"', block.group(1)))
+    assert pairs, "[project.urls] is empty"
+
+    for required in ("Homepage", "Source", "Issues"):
+        assert required in pairs, f"{required} missing -- {sorted(pairs)}"
+
+    # Point at THIS repo, not a leftover from a rename or a template.
+    assert pairs["Source"].endswith("/coherence-energy-labs/obsign_verifier"), pairs["Source"]
+    assert pairs["Issues"].startswith(pairs["Source"]), (
+        f"Issues is not under Source: {pairs['Issues']}")
+
+    bad = [u for u in pairs.values() if not u.startswith("https://")]
+    assert not bad, f"non-https url: {bad}"
