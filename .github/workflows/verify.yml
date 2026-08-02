@@ -112,6 +112,28 @@ jobs:
       - name: The published stream must re-derive here
         run: python tools/dogfood.py --check
 
+      # The replay path is the product claim, so it is exercised on every platform in
+      # the matrix rather than trusted from one. Regenerating the receipt here also
+      # proves the EXAMPLE still runs -- a committed receipt that no longer rebuilds
+      # would keep passing every test that only reads it.
+      - name: A regulated number must re-derive on this platform
+        run: |
+          python examples/ecl_portfolio.py
+          obsign-verify examples/ecl_receipt.json
+
+      - name: The approved program must be pinnable, and a swap must be refused
+        shell: python
+        run: |
+          import json, sys
+          from obsign_verify.cli import main
+          d = json.load(open("examples/ecl_receipt.json", encoding="utf-8"))
+          approved = d["params"]["program_sha256"]
+          assert main(["examples/ecl_receipt.json", "--expect-program", approved,
+                       "--quiet"]) == 0, "the approved program should verify"
+          assert main(["examples/ecl_receipt.json", "--expect-program", "0" * 64,
+                       "--quiet"]) == 1, "a different program MUST be refused"
+          print(f"program pinning holds both ways ({approved[:16]}..)")
+
       - name: The CLI must work as documented
         run: |
           obsign-verify --version

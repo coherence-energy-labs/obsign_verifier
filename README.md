@@ -46,6 +46,64 @@ would be asserting a social fact as a cryptographic one. `verified` means steps 
 and the number re-derived on your machine — you did not have to trust anyone. A
 signature adds *who*, not *whether*.
 
+## Replay programs — your number, not ours
+
+Until 0.2.0 this verifier could re-execute exactly one computation, ours. Everything
+else came back *"kernel cannot be re-executed here"*. Useful as a demonstration,
+useless as a product: the number anyone actually wants a receipt for is **theirs**.
+
+A **replay program** travels inside the receipt. `obsign-verify` executes it with
+nothing but the standard library — no compiler, no producer toolchain, no network.
+
+**Nondeterminism is not restricted, it is inexpressible.** There are no floats
+anywhere: not in the operations, not in the operands, not in the constant pool. There
+is no clock, no randomness, no environment, no I/O, no allocation, no host call.
+Arithmetic is wrapping `int64`, stated rather than assumed. Every operation is total —
+division by zero, an out-of-range shift, a bad address and an exhausted step budget are
+all **traps**, and a trap is a refusal with a reason, never an exception that escapes.
+
+The step budget is a security property, not a nicety: a receipt handed to you by an
+adversary must not be able to hang your verifier.
+
+### A worked example, and what it measures
+
+`examples/ecl_portfolio.py` puts **IFRS 9 / CECL expected credit loss** —
+`Σ PD × LGD × EAD` — on the replay path. It is the canonical number a model validator
+re-derives by hand and an auditor disputes.
+
+```console
+$ python examples/ecl_portfolio.py
+  ECL (replay, int) : 38,922,496 cents  = $389,224.96
+  instructions      : 27
+
+$ obsign-verify examples/ecl_receipt.json
+  [VERIFIED] ecl_receipt.json
+```
+
+**Twenty-seven instructions is the whole deterministic core.** The models that produce
+`PD` and `LGD` do not move — they stay in whatever stack and whatever floating point
+they already use. Only the arithmetic that *combines* them crosses over. That is the
+80/20 made concrete: the disputed number is usually not the model, it is the
+aggregation, and the aggregation is small.
+
+### The boundary, stated because you will find it anyway
+
+**Replay proves the output follows from the program. It does not prove the program
+computes what its name claims.** A two-instruction program returning a hardcoded
+constant re-derives perfectly, and this tool reports `VERIFIED` — correctly, because it
+did. A test pins that behaviour on purpose so nobody rediscovers it in a meeting.
+
+The answer is not a weaker verdict, it is to pin the program — which is how model
+validation already works. Read the program once (for the example: 27 instructions),
+approve it, record its digest:
+
+```console
+$ obsign-verify receipt.json --expect-program 3ba4e9302ac39c36...
+```
+
+The question stops being *"did this re-derive?"* and becomes *"did this re-derive from
+the program my validator approved?"* — which is what the auditor was asking all along.
+
 ## Two things it will not do
 
 **It will not name a signer the signature did not cover.** Legacy

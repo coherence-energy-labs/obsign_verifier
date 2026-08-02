@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 # This package is the VERIFIER, not the engine, so the longer name is the accurate one
 # regardless: it says what you install and what it does.
 name = "obsign-verify"
-version = "0.1.2"
+version = "0.2.0"
 description = "Re-derive an Obsign receipt's claim on your own machine, offline."
 readme = "README.md"
 license = "Apache-2.0"

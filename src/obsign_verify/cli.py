@@ -85,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
                          "forgeries that must be refused. Needs no files of your own.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--expect-program", metavar="SHA256", default=None,
+                    help="require the receipt's replay program to be this exact "
+                         "program (its program_sha256). Turns 'did this re-derive?' "
+                         "into 'did this re-derive from the program my validator "
+                         "approved?'")
     ap.add_argument("--version", action="version", version=f"obsign-verify {__version__}")
     args = ap.parse_args(argv)
 
@@ -105,6 +110,30 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  [ REFUSED ] {path.name}: unreadable ({exc})")
             continue
         res = verify(receipt)
+
+        # PROGRAM PINNING -- the answer to the sharpest attack on the replay rung.
+        #
+        # Re-derivation proves the output follows FROM THE PROGRAM. It cannot prove
+        # the program computes what its name claims: a two-instruction program that
+        # returns a hardcoded constant re-derives perfectly, and this verifier says
+        # VERIFIED, correctly, because it did.
+        #
+        # That is not a hole to paper over, it is the boundary of what replay means,
+        # and it maps onto how model validation already works. A validator reads the
+        # program ONCE -- for the worked example that is 27 readable instructions --
+        # approves it, and records its digest. From then on the question stops being
+        # "did this re-derive?" and becomes "did this re-derive FROM THE PROGRAM I
+        # APPROVED?", which is the question an auditor was asking all along.
+        if args.expect_program:
+            actual = ((receipt.get("params") or {}).get("program_sha256")
+                      if isinstance(receipt.get("params"), dict) else None)
+            if actual != args.expect_program:
+                res = dict(res, verified=False,
+                           notes=list(res["notes"]) + [
+                               f"program is not the approved one: expected "
+                               f"{args.expect_program[:16]}.., receipt carries "
+                               f"{str(actual)[:16]}.."])
+
         failures += 0 if res["verified"] else 1
         report.append({"file": str(path), **res})
         _report(path, res, args.quiet)

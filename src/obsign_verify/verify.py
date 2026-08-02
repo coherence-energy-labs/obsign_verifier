@@ -22,7 +22,77 @@ from __future__ import annotations
 
 from . import signature as sigmod
 from .canonical import integrity
+from . import replay as replaymod
 from .kernel import SUPPORTED_KERNELS, array_sha256, build_fixed_inputs, evolve
+
+
+def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
+    """Re-derive a receipt whose computation travels inside it.
+
+    Two things are checked that the fixed-kernel path does not need, and both exist
+    because the program here is attacker-supplied:
+
+    1. The program's own digest must match `params.program_sha256` when the receipt
+       states one. `params` is already inside the claim, so this is redundant against
+       a tamperer -- but it gives a stranger a short string to compare with a
+       published one, and it catches an honest producer shipping a stale digest.
+
+    2. A `Trap` is a REFUSAL with a reason, never an escape. A malformed or hostile
+       program -- an out-of-bounds address, a division by zero, an infinite loop --
+       reports `not verified` and says why. It must not hang the verifier and it must
+       not raise past this function, because a receipt you were invited to check must
+       not be able to take your process down.
+    """
+    params = receipt.get("params")
+    if not isinstance(params, dict):
+        notes.append("replay receipt carries no params; nothing to re-execute")
+        result["signature"] = sigmod.check(receipt)
+        return result
+
+    prog = params.get("program")
+    inputs = params.get("inputs")
+    if not isinstance(prog, dict) or not isinstance(inputs, list):
+        notes.append("replay params must carry {program: object, inputs: [int]}")
+        result["signature"] = sigmod.check(receipt)
+        return result
+
+    stated_digest = params.get("program_sha256")
+    actual_digest = replaymod.program_sha256(prog)
+    digest_ok = stated_digest is None or stated_digest == actual_digest
+    if not digest_ok:
+        notes.append(f"program digest mismatch: states {str(stated_digest)[:16]}.., "
+                     f"computes {actual_digest[:16]}..")
+
+    try:
+        out = replaymod.run(prog, inputs)
+    except replaymod.Trap as trap:
+        notes.append(f"program refused: {trap}")
+        result["signature"] = sigmod.check(receipt)
+        return result
+
+    got = replaymod.output_sha256(out)
+    want = (receipt.get("output") or {}).get("sha256")
+    result["reproduced"] = (got == want)
+    if not result["reproduced"]:
+        notes.append(f"output mismatch: claim {str(want)[:16]}.., "
+                     f"recomputed {got[:16]}..")
+
+    # Length rides outside the byte hash, exactly as shape/dtype do for the array
+    # kernel, so it is compared explicitly rather than trusted.
+    declared = receipt.get("output") or {}
+    len_ok = declared.get("length") in (None, len(out))
+    if not len_ok:
+        notes.append("output length does not match the re-executed result")
+
+    sig = sigmod.check(receipt)
+    result["signature"] = sig
+    sig_ok = (not sig["present"]) or sig["valid"]
+    if sig["present"] and not sig["valid"]:
+        notes.append(sig["detail"])
+
+    result["verified"] = bool(result["integrity"] and result["reproduced"]
+                              and digest_ok and len_ok and sig_ok)
+    return result
 
 
 def verify(receipt: dict) -> dict:
@@ -47,6 +117,15 @@ def verify(receipt: dict) -> dict:
             notes.append(detail)
 
         kernel = receipt.get("kernel")
+
+        # A REPLAY PROGRAM carries its own computation. Everything needed to
+        # re-derive the number is inside the receipt, so this branch needs no
+        # producer toolchain, no compiler checkout and no network -- which is the
+        # whole difference between a receipt a stranger can check and one they
+        # cannot. See replay.py for why nondeterminism is not expressible there.
+        if kernel == replaymod.SPEC:
+            return _verify_replay(receipt, result, notes)
+
         if kernel not in SUPPORTED_KERNELS:
             notes.append(f"kernel {kernel!r} cannot be re-executed by this verifier "
                          f"(supported: {', '.join(SUPPORTED_KERNELS)}) - "

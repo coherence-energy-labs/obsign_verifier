@@ -16,7 +16,7 @@ __all__ = ["verify", "load_receipt", "claim_of", "canonical_sha256", "__version_
 # correctly from a source tree nobody installed. That makes it a SECOND copy of the
 # version, which is a drift waiting to happen -- so test_version_matches_pyproject holds
 # it to the value in pyproject.toml and fails the build if the two ever disagree.
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 
 def data_path(*parts: str):
