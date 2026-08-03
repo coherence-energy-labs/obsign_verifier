@@ -1,0 +1,17 @@
+{
+  "name": "obsign-verify",
+  "version": "0.2.0",
+  "description": "Re-derive an Obsign receipt's claim on your own machine, offline. Zero dependencies.",
+  "license": "Apache-2.0",
+  "author": "Coherence Energy Labs",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "bin": { "obsign-verify": "bin/obsign-verify.js" },
+  "engines": { "node": ">=18" },
+  "files": ["src", "bin", "README.md", "LICENSE"],
+  "keywords": ["provenance", "receipts", "verification", "determinism", "reproducibility", "audit"],
+  "repository": { "type": "git", "url": "git+https://github.com/coherence-energy-labs/obsign_verifier.git", "directory": "js" },
+  "homepage": "https://obsign.io",
+  "bugs": { "url": "https://github.com/coherence-energy-labs/obsign_verifier/issues" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

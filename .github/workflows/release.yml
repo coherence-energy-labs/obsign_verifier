@@ -108,6 +108,58 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  # The JavaScript port ships to npm through the SAME no-token path as PyPI: OIDC
+  # trusted publishing, so there is no npm token to leak, rotate or forget. It also
+  # attaches provenance, so npm records which repo and workflow built the tarball --
+  # which is the only honest way for a provenance tool to publish itself.
+  #
+  # Gated on the cross-implementation tests, not on its own tests in isolation. The
+  # question worth answering before this reaches a registry is not "does the JS suite
+  # pass" but "does it agree with the reference on receipts Python produced".
+  npm:
+    name: publish the JavaScript port to npm
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write        # the ONLY credential: a short-lived OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs a recent npm; the runner's bundled version may predate
+      # it, and a silent fallback to token auth is exactly what this job exists to avoid.
+      - name: npm must be new enough for trusted publishing
+        run: |
+          set -eu
+          npm install -g npm@latest
+          npm --version
+
+      - name: agree with the Python implementation, or do not ship
+        working-directory: js
+        run: npm test
+
+      - name: the CLI must work as the README says
+        working-directory: js
+        run: |
+          set -eu
+          node bin/obsign-verify.js ../examples/ecl_receipt.json
+          APPROVED=$(python3 -c "import json;print(json.load(open('../examples/ecl_receipt.json'))['params']['program_sha256'])")
+          node bin/obsign-verify.js ../examples/ecl_receipt.json --expect-program "$APPROVED"
+          # And a program that is NOT the approved one must be refused.
+          if node bin/obsign-verify.js ../examples/ecl_receipt.json --expect-program 0000000000000000000000000000000000000000000000000000000000000000; then
+            echo "program pinning FAILED OPEN -- a wrong digest was accepted"; exit 1
+          fi
+          echo "program pinning holds both ways"
+
+      - name: publish
+        working-directory: js
+        run: npm publish --provenance --access public
+
   smoke:
     name: install from PyPI and verify
     needs: publish
