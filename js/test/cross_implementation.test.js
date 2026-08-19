@@ -108,6 +108,26 @@ test('int and float are NOT the same value here, which JSON.parse cannot express
   assert.strictEqual(require('../src/canonical.js').canonicalString(b), '{"x":1.0}');
 });
 
+test('exponential floats canonicalise the way Python repr does', () => {
+  // Python pads a whole float in POSITIONAL form (`1.0`) and never in exponential
+  // form (`1e-06`, not `1.0e-06`). This verifier padded both, so it recomputed a
+  // different claim hash than the producer for any float with an integral mantissa
+  // outside 1e-4..1e16 -- and reported the producer's own committed fixture as
+  // INTEGRITY FAIL. Forensic metrics, tolerances and p-values live in that range.
+  const { pyFloatRepr } = require('../src/canonical.js');
+  const cases = [
+    [1e-6, '1e-06'], [5e-5, '5e-05'], [-3e-5, '-3e-05'],
+    [1e16, '1e+16'], [1e21, '1e+21'], [5e-324, '5e-324'], [1e-5, '1e-05'],
+    [1.5e-7, '1.5e-07'],            // fractional mantissa: unchanged
+    [0.0001, '0.0001'],             // just inside the positional threshold
+    [1e15, '1000000000000000.0'],   // positional, and here the `.0` IS correct
+    [1.0, '1.0'], [0.0, '0.0'], [-0.0, '-0.0'], [0.5, '0.5'],
+  ];
+  for (const [v, want] of cases) {
+    assert.strictEqual(pyFloatRepr(v), want, `pyFloatRepr(${v})`);
+  }
+});
+
 test('wrapping int64 and truncate-toward-zero match the reference', () => {
   const prog = (code, consts) => ({
     spec: replay.SPEC, mem: 8, steps: 100, consts,
@@ -116,18 +136,44 @@ test('wrapping int64 and truncate-toward-zero match the reference', () => {
   const INT64_MAX = 9223372036854775807n;
   const INT64_MIN = -9223372036854775808n;
 
-  // Constants must be JSON integers; use the program's own arithmetic to reach the edge.
+  // A const is a VALUE, so it is a BigInt. This test used to pass Numbers and reach
+  // the int64 edge only through the program's own arithmetic -- deliberately, per the
+  // comment it carried -- and that detour is exactly why the lossy JSON->interpreter
+  // boundary went unseen: `Number(2n**53n+1n)` rounds, so the receipt hash and the
+  // signature verified over exact values while the re-derivation ran on rounded ones.
+  // The edge is now placed directly in the constant pool, where the defect lived.
   const wrapProg = prog(
     [['LOADC', 0, 0], ['LOADC', 1, 1], ['ADD', 0, 0, 1], ['HALT']],
-    [Number.MAX_SAFE_INTEGER, 1],
+    [BigInt(Number.MAX_SAFE_INTEGER), 1n],
   );
-  const got = replay.run(wrapProg, [0]);
+  const got = replay.run(wrapProg, [0n]);
   assert.strictEqual(got[0], BigInt(Number.MAX_SAFE_INTEGER) + 1n);
-  void INT64_MAX; void INT64_MIN;
 
-  for (const [a, b, want] of [[-7, 2, -3n], [7, -2, -3n], [-7, -2, 3n], [7, 2, 3n]]) {
+  // Values that a double cannot hold, carried as constants and as inputs. Every one
+  // of these was either silently rounded or falsely refused before the fix.
+  for (const v of [INT64_MAX, INT64_MIN, 2n ** 53n + 1n, 2n ** 53n + 3n,
+                   -(2n ** 53n) - 1n, 2n ** 62n + 12345n]) {
+    const asConst = prog([['LOADC', 0, 0], ['HALT']], [v]);
+    assert.strictEqual(replay.run(asConst, [0n])[0], v, `const ${v}`);
+
+    const asInput = prog([['MOV', 0, 6], ['HALT']], [0n]);
+    assert.strictEqual(replay.run(asInput, [v])[0], v, `input ${v}`);
+  }
+
+  // A float in the constant pool has no int64 form and must be refused, not coerced.
+  // `Number.isInteger(7.0)` is true, so the old number-based check accepted it.
+  assert.throws(
+    () => replay.run(prog([['LOADC', 0, 0], ['HALT']], [7.0]), [0n]),
+    /floats are not representable/,
+    'a float const must trap, matching the Python reference');
+  assert.throws(
+    () => replay.run(prog([['LOADC', 0, 0], ['HALT']], [1n]), [7.5]),
+    /input\[0\] is not an integer/,
+    'a float input must trap');
+
+  for (const [a, b, want] of [[-7n, 2n, -3n], [7n, -2n, -3n], [-7n, -2n, 3n], [7n, 2n, 3n]]) {
     const p = prog([['LOADC', 0, 0], ['LOADC', 1, 1], ['DIV', 0, 0, 1], ['HALT']], [a, b]);
-    assert.strictEqual(replay.run(p, [0])[0], want, `${a}/${b}`);
+    assert.strictEqual(replay.run(p, [0n])[0], want, `${a}/${b}`);
   }
 });
 

@@ -168,8 +168,16 @@ function pyFloatRepr(x) {
 
   const abs = Math.abs(x);
   if (abs >= 1e16 || abs < 1e-4) {
-    const [mantRaw, expRaw] = x.toExponential().split('e');
-    const mant = mantRaw.includes('.') ? mantRaw : `${mantRaw}.0`;
+    // NO `.0` PADDING ON THE MANTISSA. Python's repr pads a whole float in
+    // POSITIONAL form (`1.0`, handled below) and never in exponential form: it
+    // writes `1e-06`, not `1.0e-06`. Padding here made this verifier recompute a
+    // different claim hash than the producer for any float with an integral
+    // mantissa outside 1e-4..1e16 -- so `obsign-verify` from npm reported the
+    // producer's own committed fixture (web/verify/_testdata/tiny_receipt.json,
+    // metrics 1e-06 / 5e-05 / -3e-05) as INTEGRITY FAIL. Accusing an honest
+    // receipt of forgery is the worst verdict this tool can return, and forensic
+    // metrics, tolerances and p-values live in exactly that range.
+    const [mant, expRaw] = x.toExponential().split('e');
     const sign = expRaw[0] === '-' ? '-' : '+';
     const digits = expRaw.replace(/^[+-]/, '').padStart(2, '0');
     return `${mant}e${sign}${digits}`;
