@@ -241,11 +241,28 @@ def run(prog: dict, inputs: list[int]) -> list[int]:
     bug in the interpreter, not a property of the receipt -- and the caller treats a
     crash as a verifier defect rather than as a verdict.
     """
+    out, _steps = run_counted(prog, inputs)
+    return out
+
+
+def run_counted(prog: dict, inputs: list[int], step_cap: int | None = None):
+    """`run`, plus the number of instructions actually executed.
+
+    The count is verifier-internal -- not part of the cross-implementation contract,
+    which is (program, inputs) -> output bytes. It exists so a caller can BOUND its
+    own work when it re-runs a program many times (input-liveness probing), because
+    the declared `steps` budget is only an upper bound: a program may spin close to
+    it. `step_cap`, when given, lowers the budget for THIS call only, so a probe can
+    refuse to spend more than it planned on any single perturbation; hitting the cap
+    raises the ordinary step-budget Trap.
+
+    The value returned by an uncapped call is identical to `run`'s, byte for byte.
+    """
     validate(prog)
 
     mem = [0] * prog["mem"]
     code = prog["code"]
-    budget = prog["steps"]
+    budget = prog["steps"] if step_cap is None else min(prog["steps"], step_cap)
 
     in_off, in_len = prog["input"]["offset"], prog["input"]["length"]
     if len(inputs) != in_len:
@@ -350,7 +367,7 @@ def run(prog: dict, inputs: list[int]) -> list[int]:
             mem[ins[1]] = v
 
     out_off, out_len = prog["output"]["offset"], prog["output"]["length"]
-    return mem[out_off:out_off + out_len]
+    return mem[out_off:out_off + out_len], steps
 
 
 def output_sha256(values: list[int]) -> str:

@@ -23,6 +23,12 @@ def _report(path: Path, res: dict, quiet: bool) -> None:
     print(f"  [{mark:^8}] {path.name}")
     print(f"      integrity   {'ok' if res['integrity'] else 'FAIL'}")
     print(f"      re-derived  {'ok' if res['reproduced'] else 'FAIL'}")
+    live = res.get("input_liveness")
+    if live and live != "n/a":
+        shown = {"live": "ok - the output depends on the declared inputs",
+                 "dead": "FAIL - the output ignores every declared input",
+                 "indeterminate": "unproven (probe budget reached)"}.get(live, live)
+        print(f"      inputs      {shown}")
     sig = res.get("signature") or {}
     if not sig.get("present"):
         print("      signature   absent (integrity and re-derivation still hold)")

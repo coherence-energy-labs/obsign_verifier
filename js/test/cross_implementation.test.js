@@ -32,6 +32,34 @@ test('the ECL receipt Python produced re-derives here, byte for byte', () => {
   assert.strictEqual(res.verified, true, res.notes.join('; '));
 });
 
+test('input-liveness agrees with Python: genuine live, constant refused', () => {
+  // The genuine program depends on all its inputs.
+  assert.strictEqual(verify(readReceipt(ECL)).input_liveness, 'live');
+
+  // A constant program that re-derives the true answer but ignores every input is
+  // REFUSED here exactly as it is in Python -- the two verifiers must not disagree
+  // on the trivial-program attack, or a forger picks whichever one clears it.
+  const doc = JSON.parse(fs.readFileSync(ECL, 'utf8'));
+  const n = doc.params.inputs.length;
+  // consts are VALUES, so BigInt -- a Number const is now (correctly) refused as a
+  // float. JSON has no BigInt, so serialize through a replacer; loadReceipt turns
+  // the numbers back into BigInt via the tagged parser, exactly as in the field.
+  const J = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? Number(v) : v));
+  const cp = {
+    spec: replay.SPEC, mem: 2048, steps: 50, consts: [38922496n],
+    input: { offset: 1024, length: n }, output: { offset: 0, length: 1 },
+    code: [['LOADC', 0, 0], ['HALT']],
+  };
+  const out = replay.run(cp, doc.params.inputs.map(BigInt));
+  doc.params.program = cp;
+  doc.params.program_sha256 = replay.programSha256(cp);
+  doc.output.sha256 = replay.outputSha256(out);
+  doc.receipt_sha256 = canonicalSha256(claimOf(loadReceipt(J(doc))));
+  const res = verify(loadReceipt(J(doc)));
+  assert.strictEqual(res.input_liveness, 'dead', res.notes.join('; '));
+  assert.strictEqual(res.verified, false);
+});
+
 test('the claim hash agrees with the digest Python wrote into the file', () => {
   const r = readReceipt(ECL);
   // Recomputed here, from the same bytes, by a different canonicaliser.

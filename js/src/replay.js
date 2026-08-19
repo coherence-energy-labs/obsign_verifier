@@ -201,13 +201,24 @@ function programSha256(prog) {
   return createHash('sha256').update(Buffer.from(canonicalString(wrapPlain(prog)), 'utf8')).digest('hex');
 }
 
-/** Execute a validated program. Throws only `Trap`. */
+/** Execute a validated program. Throws only `Trap`. Returns the output window. */
 function run(prog, inputs) {
+  return runCounted(prog, inputs).out;
+}
+
+/** `run`, plus the number of instructions executed (`steps`).
+ *
+ * The count is verifier-internal, NOT part of the cross-implementation contract --
+ * a caller uses it to bound its own work when it re-runs a program many times
+ * (input-liveness probing), since the declared `steps` budget is only an upper
+ * bound. `stepCap`, when given, lowers the budget for THIS call only. The `out`
+ * of an uncapped call is byte-identical to `run`'s. */
+function runCounted(prog, inputs, stepCap) {
   validate(prog);
 
   const mem = new Array(prog.mem).fill(0n);
   const code = prog.code;
-  const budget = prog.steps;
+  const budget = stepCap === undefined ? prog.steps : Math.min(prog.steps, stepCap);
   const consts = prog.consts.map(BigInt);
 
   const { offset: inOff, length: inLen } = prog.input;
@@ -281,7 +292,7 @@ function run(prog, inputs) {
   }
 
   const { offset: outOff, length: outLen } = prog.output;
-  return mem.slice(outOff, outOff + outLen);
+  return { out: mem.slice(outOff, outOff + outLen), steps };
 }
 
 /** SHA-256 over the output as little-endian int64, matching `array_sha256`. */
@@ -291,4 +302,5 @@ function outputSha256(values) {
   return createHash('sha256').update(buf).digest('hex');
 }
 
-module.exports = { SPEC, Trap, validate, run, outputSha256, programSha256, wrap, INT64_MIN, INT64_MAX };
+module.exports = { SPEC, Trap, validate, run, runCounted, outputSha256, programSha256,
+  wrap, INT64_MIN, INT64_MAX, MAX_STEPS };

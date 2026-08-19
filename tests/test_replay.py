@@ -158,16 +158,22 @@ class TestEclReceipt:
         assert res["verified"] is False
         assert any("refused" in n for n in res["notes"])
 
-    def test_a_hardcoded_answer_VERIFIES_and_that_is_the_honest_boundary(self):
-        """THE LIMIT OF THE REPLAY RUNG, pinned so nobody rediscovers it in a meeting.
+    def test_a_hardcoded_answer_is_REFUSED_because_it_ignores_its_inputs(self):
+        """THE REPLAY-RUNG BOUNDARY, and where it now sits.
 
-        Replay proves the output follows FROM THE PROGRAM. It does not prove the
-        program computes what its name claims. A two-instruction constant re-derives
-        perfectly and this verifier says VERIFIED -- correctly, because it did.
+        This test used to assert the OPPOSITE -- that a two-instruction constant
+        re-derives perfectly and is therefore VERIFIED, "the honest boundary", with
+        a standing note: "if this ever starts failing, the boundary moved and the
+        README and COMPLIANCE.md both need re-reading." It moved. It was moved on
+        purpose, and the docs were re-read.
 
-        The answer is not to weaken the verdict, it is to pin the program: see the
-        next test. If this ever starts failing, the boundary moved and the README
-        and COMPLIANCE.md both need re-reading.
+        Re-derivation proves the output follows from the program AND ITS INPUTS. A
+        constant follows from neither -- perturb every input and the answer never
+        changes -- so it proves nothing about the inputs it names, and the verifier
+        now refuses it on input-liveness. `--expect-program` was the old mitigation;
+        it never helped here, because a constant has a perfectly pinnable digest.
+        Making the output actually depend on the inputs is the one thing a pin
+        cannot fake, and it is now checked.
         """
         r = self.load()
         true_answer = 38_922_496
@@ -180,7 +186,41 @@ class TestEclReceipt:
         r["params"]["program_sha256"] = program_sha256(r["params"]["program"])
         r.pop("receipt_sha256")
         r["receipt_sha256"] = canonical_sha256(claim_of(r))
-        assert verify(r)["verified"] is True
+        res = verify(r)
+        assert res["verified"] is False
+        assert res["input_liveness"] == "dead"
+        assert any("does not depend on ANY declared input" in n for n in res["notes"])
+
+    def test_a_genuine_computation_reads_live_and_still_verifies(self):
+        """The counterweight, so liveness can never be 'fixed' by refusing everything:
+        the shipped ECL program depends on all thirteen of its inputs, reads `live`,
+        and verifies unchanged."""
+        res = verify(self.load())
+        assert res["verified"] is True
+        assert res["input_liveness"] == "live"
+
+    def test_liveness_probing_cannot_be_turned_into_a_denial_of_service(self):
+        """A program that IGNORES its inputs but spins is still refused fast: the
+        probe caps each perturbation run and the total, so a hostile expensive
+        constant cannot make liveness cost more than a small multiple of the base."""
+        import time
+        r = self.load()
+        # a program that does real looping work, then returns a constant
+        r["params"]["program"] = {
+            "spec": SPEC, "mem": 64, "steps": 50_000_000, "consts": [38_922_496, 1, 0],
+            "input": {"offset": 16, "length": len(r["params"]["inputs"])},
+            "output": {"offset": 0, "length": 1},
+            "code": [["LOADC", 0, 1], ["LOADC", 1, 2], ["MUL", 0, 0, 0],
+                     ["LOADC", 2, 0], ["MOV", 3, 0], ["HALT"]],
+        }
+        r["params"]["program_sha256"] = program_sha256(r["params"]["program"])
+        r.pop("receipt_sha256")
+        r["receipt_sha256"] = canonical_sha256(claim_of(r))
+        t = time.perf_counter()
+        res = verify(r)
+        assert time.perf_counter() - t < 5.0, "liveness probe was not bounded"
+        assert res["verified"] is False
+        assert res["input_liveness"] == "dead"
 
     def test_program_pinning_catches_what_re_derivation_cannot(self):
         """A validator approves 27 readable instructions ONCE and records the digest.
