@@ -101,6 +101,11 @@ class Parser {
       if (this.i >= this.s.length) this.err('unterminated string');
       const c = this.s[this.i];
       if (c === '"') { this.i++; return out; }
+      // RFC 8259 forbids a raw control character (< U+0020) inside a string; it must
+      // be escaped. Python's json and the browser parser both reject it, so this
+      // parser was the odd one out -- it accepted a raw U+001F and canonicalised it,
+      // making a receipt only IT could load. Reject, matching the others.
+      if (c < ' ') this.err('unescaped control character in string');
       if (c !== '\\') { out += c; this.i++; continue; }
       this.i++;
       const e = this.s[this.i++];
@@ -136,7 +141,18 @@ class Parser {
     const lit = this.s.slice(start, this.i);
     if (!/^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(lit)) this.err(`bad number ${lit}`);
     // THE WHOLE POINT: the literal's SHAPE decides the type, not its value.
-    return isFloat ? mkFloat(Number(lit)) : mkInt(BigInt(lit));
+    if (isFloat) {
+      const f = Number(lit);
+      // A literal like 1e400 parses to Infinity. Python's load_receipt rejects it
+      // HERE, at parse, via parse_float. If this parser instead accepted it and only
+      // failed later at serialisation, the two verifiers would disagree on what LOADS:
+      // a receipt with 1e400 in `env` (excluded from the claim) loads in JS -- the
+      // Infinity never reaches the canonicaliser -- while Python refuses it outright.
+      // The verifiers must agree on loadability, not just on the claim hash.
+      if (!Number.isFinite(f)) this.err(`non-finite float literal ${lit}`);
+      return mkFloat(f);
+    }
+    return mkInt(BigInt(lit));
   }
 }
 
@@ -220,9 +236,18 @@ function canonicalString(v) {
   if (isNum(v)) return v.__n === INT ? v.v.toString() : pyFloatRepr(v.v);
   if (Array.isArray(v)) return `[${v.map(canonicalString).join(',')}]`;
   if (isObj(v)) {
-    // Python sorts by the string key; JS's default sort is by UTF-16 code unit,
-    // which agrees for every key that is not an unpaired surrogate.
-    const keys = [...v.__obj.keys()].sort();
+    // Python sorts keys by Unicode CODE POINT. JS's default .sort() is by UTF-16
+    // code UNIT, and the two DISAGREE whenever a BMP key in U+E000..U+FFFF meets an
+    // astral key: the astral key's lead surrogate (0xD800..0xDBFF) sorts below the
+    // BMP key by unit but above it by code point. (The old comment here claimed
+    // agreement "for every key that is not an unpaired surrogate" -- wrong; paired
+    // surrogates diverge too.) Compare by code point to match Python exactly.
+    const cpCmp = (a, b) => {
+      const A = [...a], B = [...b], n = Math.min(A.length, B.length);
+      for (let k = 0; k < n; k++) { const d = A[k].codePointAt(0) - B[k].codePointAt(0); if (d) return d; }
+      return A.length - B.length;
+    };
+    const keys = [...v.__obj.keys()].sort(cpCmp);
     return `{${keys.map((k) => `${pyStringRepr(k)}:${canonicalString(v.__obj.get(k))}`).join(',')}}`;
   }
   throw new JsonError('value is not JSON-serialisable');

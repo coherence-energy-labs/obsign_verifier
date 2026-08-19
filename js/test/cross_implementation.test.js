@@ -14,7 +14,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { loadReceipt, canonicalSha256, claimOf } = require('../src/canonical.js');
+const { loadReceipt, canonicalSha256, canonicalString, claimOf } = require('../src/canonical.js');
 const { verify } = require('../src/verify.js');
 const replay = require('../src/replay.js');
 
@@ -96,6 +96,56 @@ test('a resealed forgery passes integrity here too, and still fails re-derivatio
   assert.strictEqual(res.integrity, true, 'a resealed forgery should look internally consistent');
   assert.strictEqual(res.reproduced, false);
   assert.strictEqual(res.verified, false);
+});
+
+test('canonicalisation matches Python on the adversarial corpus', () => {
+  // Each case is [json text, expected canonical string] where the expected value is
+  // exactly what CPython json.dumps(sort_keys=True, ...) produces. These are the
+  // inputs a hostile receipt author uses to make two verifiers disagree; all were
+  // divergent before the fixes and must now agree byte-for-byte.
+  const canon = (t) => canonicalString(loadReceipt(t));
+  const cases = [
+    // astral vs BMP key -- code-point order, not UTF-16 code-unit order
+    ['{"\\ue000":1,"\\ud83d\\ude00":2}', '{"\\ue000":1,"\\ud83d\\ude00":2}'],
+    ['{"\\uff00":1,"\\ud800\\udc00":2}', '{"\\uff00":1,"\\ud800\\udc00":2}'],
+    // DEL (U+007F) must be escaped, like Python ensure_ascii
+    ['{"k":"\\u007f"}', '{"k":"\\u007f"}'],
+    ['{"\\u007f":1,"a":2}', '{"a":2,"\\u007f":1}'],
+    // __proto__ is an ordinary key, not the prototype accessor
+    ['{"__proto__":424242,"real":1.0}', '{"__proto__":424242,"real":1.0}'],
+  ];
+  for (const [text, want] of cases) {
+    assert.strictEqual(canon(text), want, `canon(${text})`);
+  }
+});
+
+test('canonicalisation REFUSES what Python and the browser refuse', () => {
+  const refuse = [
+    '{"k":"ab"}',   // raw control char in a string (RFC 8259 forbids)
+    '{"m":1e400}',        // overflows to Infinity
+    '{"m":NaN}',          // bare non-finite token
+    '{"m":Infinity}',
+  ];
+  for (const text of refuse) {
+    assert.throws(() => canonicalString(loadReceipt(text)), undefined,
+      `must refuse to load ${JSON.stringify(text)}`);
+  }
+});
+
+test('a non-finite float in a NON-claim field is refused at LOAD, not merely at canon', () => {
+  // The subtle N-version split: `env` is excluded from the claim, so a canon-only
+  // check of the claim would never see an Infinity hidden in env and would ACCEPT the
+  // receipt -- while Python's load_receipt refuses it outright at parse. If the two
+  // verifiers disagree on what LOADS, a forger ships a receipt one accepts and the
+  // other rejects. loadReceipt itself must throw, before claimOf ever drops env.
+  for (const text of [
+    '{"spec":"x","a":1,"env":{"p":1e400}}',
+    '{"spec":"x","a":1,"env":{"p":NaN}}',
+    '{"spec":"x","a":1,"env":{"p":Infinity}}',
+  ]) {
+    assert.throws(() => loadReceipt(text), undefined,
+      `loadReceipt must refuse ${JSON.stringify(text)} at parse, not defer to canon`);
+  }
 });
 
 test('this implementation reaches the SAME integrity verdict as Python, bundle by bundle', () => {
