@@ -12,11 +12,13 @@ $ obsign-verify receipt.json
   [VERIFIED] receipt.json
       integrity   ok
       re-derived  ok
+      signature   ok, signer BOUND (A. Chen, Coherence Energy Labs)
 
 1/1 receipt(s) verified on THIS machine.
 ```
 
-Exit `0` if every receipt verified, `1` otherwise.
+Exit `0` if every receipt verified, `1` otherwise. A receipt that carries a signature
+which does not verify is **refused** — the exit code, not a note, carries that verdict.
 
 ## Read this before you rely on it
 
@@ -40,12 +42,43 @@ byte-identical agreement.
 |---|---|
 | **integrity** — does `receipt_sha256` recompute from the claim? | every receipt |
 | **re-derived** — does re-running the program reproduce the output? | `obsign/replay/1` |
-| **signature** | **not implemented here** — reported, never silently skipped |
+| **signature** — does the Ed25519 signature verify, and cover what it claims to? | every signed receipt |
 | **issuer trust** | out of scope in every implementation, deliberately |
 
 It does **not** re-execute `tau_field_fixed`; those receipts report `re-derived: not
-attempted` with a note. *"I cannot check this"* is a third answer, and collapsing it
-into pass or fail is how a verifier starts lying.
+attempted` with a note and are **never reported as verified** — a valid signature says
+*who*, it does not stand in for recomputing *whether*. *"I cannot check this"* is a
+third answer, and collapsing it into pass or fail is how a verifier starts lying.
+
+### The signature check, and what it refuses to pretend
+
+Ed25519 comes from `node:crypto` (Node 18+), so this still has zero dependencies.
+The check mirrors the Python reference exactly, including the part that matters most:
+
+- **It will not name a signer the signature did not cover.** Legacy
+  `obsign/signature/v1` signs the bare receipt hash and attributes *nobody*
+  (`identity_bound: false`, `attributed_signer: null`). Only `obsign/signature/v2`,
+  which signs the domain-tagged hash of `{spec, alg, public_key, receipt_sha256,
+  signer, binds_sha256}`, binds a name.
+- **The bound-metadata check runs unconditionally.** `binds` is not covered by the
+  signature — it is supplied by whoever hands you the file — so deleting or emptying it
+  cannot *skip* the comparison against `binds_sha256`, only *fail* it. The `case`
+  block (case id, examiner) lives outside `receipt_sha256`, so this is the check that
+  stops an examiner's name being rewritten on a cryptographically valid receipt.
+- **An unbound `case` is reported, never assumed harmless.** The producer's post-hoc
+  case export legitimately emits one; the verifier says out loud that it is an
+  unattested annotation.
+
+Before 0.3.0 this port did **not** check signatures, and said so in a note — while
+`verified` was computed without the signature, so a forged one printed `VERIFIED` and
+exited `0`. The note was honest and useless: documentation is not a control. Whatever
+this implementation declines to check, it now also declines to pass.
+
+The signature fixtures it is tested against were **signed by the producer**, not by
+this package (`src/obsign_verify/data/conformance/`). Two implementations that only
+ever check their own output agree about their own mistakes; for three releases the
+Python verifier and the producer disagreed about the signed bytes and neither suite
+could see it.
 
 ## The trap this package exists to survive
 

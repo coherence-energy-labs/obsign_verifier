@@ -42,6 +42,30 @@ jobs:
       - run: python -m pip install --disable-pip-version-check -e ".[dev]"
       - run: python -m pytest -q
 
+      # The version lives in FOUR files across two packages (pyproject.toml,
+      # __init__.py, js/package.json, js/src/index.js) and the tag is a fifth copy.
+      # The Python suite holds its two together; nothing held the JavaScript pair to
+      # them, and nothing compared any of them to the tag. The smoke job would have
+      # caught a tag/PyPI mismatch -- AFTER npm had already published under the wrong
+      # number. Check all five before anything leaves the building.
+      - name: the tag and every version string must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import json, os, re, sys
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          py = re.search(r'(?m)^version\s*=\s*"([^"]+)"',
+                         open("pyproject.toml", encoding="utf-8").read()).group(1)
+          from obsign_verify import __version__ as pkg
+          npm = json.load(open("js/package.json", encoding="utf-8"))["version"]
+          js = re.search(r"VERSION:\s*'([^']+)'",
+                         open("js/src/index.js", encoding="utf-8").read()).group(1)
+          seen = {"tag": tag, "pyproject.toml": py, "__init__.py": pkg,
+                  "js/package.json": npm, "js/src/index.js": js}
+          if len(set(seen.values())) != 1:
+              sys.exit(f"version strings disagree: {seen}")
+          print(f"all five agree: {tag}")
+
       # The command a stranger runs, run from the tag on every platform. macos-14
       # is ARM64: different libm, and the only place the .5-boundary risk could bite.
       - name: obsign-verify --self-check
@@ -71,13 +95,22 @@ jobs:
           whl = glob.glob("dist/*.whl")
           assert whl, "no wheel built"
           names = zipfile.ZipFile(whl[0]).namelist()
+          # The producer-signed conformance corpus is in the third entry. It lives in
+          # data/conformance/, which `data/*.json` does NOT match; it is in the wheel
+          # only because pyproject lists the directory separately. This is the check
+          # that notices if that line is ever lost -- otherwise the corpus is present
+          # in the tree, green in CI, and absent for every stranger who installs.
           need = {"data/conformance_vectors.json": 1,
-                  "data/challenge/bundles/resealed_tampered_claim/receipt.json": 1}
+                  "data/challenge/bundles/resealed_tampered_claim/receipt.json": 1,
+                  "data/conformance/producer_signed_replay.json": 1}
           missing = [k for k in need if not any(k in n for n in names)]
           bundles = len([n for n in names if "bundles" in n and n.endswith("receipt.json")])
-          if missing or bundles < 9:
-              sys.exit(f"wheel is not self-contained: missing={missing} bundles={bundles}")
-          print(f"wheel carries the vectors and all {bundles} challenge bundles")
+          conformance = len([n for n in names if "data/conformance/" in n and n.endswith(".json")])
+          if missing or bundles < 9 or conformance < 3:
+              sys.exit(f"wheel is not self-contained: missing={missing} "
+                       f"bundles={bundles} conformance={conformance}")
+          print(f"wheel carries the vectors, all {bundles} challenge bundles and "
+                f"{conformance} producer-signed conformance receipts")
 
       # Install the built wheel into a CLEAN environment with no repo present and
       # run it the way a stranger would. Testing the source tree proves the source
@@ -88,6 +121,24 @@ jobs:
           python -m venv /tmp/stranger
           /tmp/stranger/bin/python -m pip install --quiet dist/*.whl
           cd /tmp && /tmp/stranger/bin/obsign-verify --self-check
+          # Without the [sig] extra the producer-signed corpus must be reported as
+          # NOT CHECKED by name -- not silently passed, not counted as a failure.
+          cd /tmp && /tmp/stranger/bin/obsign-verify --self-check | grep -q "NOT CHECKED"
+
+      # The same wheel WITH signature support. This is the only place the 0.3.0 fix
+      # -- producer-signed receipts accepted, signer bound, binds-stripping forgery
+      # refused -- is exercised on the artifact that ships rather than the source
+      # tree. Through 0.2.1 no gate ran this, and the shipped wheel refused every
+      # genuine v2 signature while the source tree's suite stayed green.
+      - name: install the wheel WITH [sig] as a stranger and cross the boundary
+        run: |
+          set -eu
+          python -m venv /tmp/stranger_sig
+          WHL=$(ls dist/*.whl)
+          /tmp/stranger_sig/bin/python -m pip install --quiet "${WHL}[sig]"
+          cd /tmp && /tmp/stranger_sig/bin/obsign-verify --self-check | tee out.txt
+          grep -q "3/3 producer-signed receipt(s) accepted with the signer bound" out.txt
+          grep -q "binds-stripping forgery was refused" out.txt
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -176,9 +227,11 @@ jobs:
         run: |
           set -eu
           for i in 1 2 3 4 5 6; do
-            if pip install --quiet "obsign-verify==${GITHUB_REF_NAME#v}"; then break; fi
+            if pip install --quiet "obsign-verify[sig]==${GITHUB_REF_NAME#v}"; then break; fi
             echo "not on the index yet, retry $i"; sleep 20
           done
           obsign-verify --version
-          obsign-verify --self-check
-          echo "A stranger can install this from PyPI and refuse every forgery."
+          obsign-verify --self-check | tee out.txt
+          # [sig] is installed, so the producer-signed round trip MUST have run.
+          grep -q "3/3 producer-signed receipt(s) accepted with the signer bound" out.txt
+          echo "A stranger can install this from PyPI, refuse every forgery, and accept a receipt the producer signed."

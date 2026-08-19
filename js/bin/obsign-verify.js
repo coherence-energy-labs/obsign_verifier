@@ -22,9 +22,10 @@ const USAGE = `obsign-verify ${VERSION}  --  re-derive a receipt's claim, offlin
   --version
 
 This is a PORT of the Python reference implementation by the same author, not an
-independent second implementation. It re-derives obsign/replay/1 programs and checks
-integrity for every receipt; it does NOT re-execute tau_field_fixed and does NOT check
-signatures -- both are reported explicitly rather than silently skipped.`;
+independent second implementation. It re-derives obsign/replay/1 programs, checks
+integrity for every receipt, and verifies Ed25519 signatures over what they actually
+cover. It does NOT re-execute tau_field_fixed -- that is reported explicitly rather
+than silently skipped, and such a receipt is never reported as verified.`;
 
 function main(argv) {
   const args = argv.slice(2);
@@ -73,6 +74,13 @@ function main(argv) {
       console.log(`  [${res.verified ? 'VERIFIED' : 'REFUSED '}] ${file}`);
       console.log(`      integrity   ${res.integrity ? 'ok' : 'FAILED'}`);
       console.log(`      re-derived  ${res.reproduced === null ? 'not attempted' : (res.reproduced ? 'ok' : 'FAILED')}`);
+      // A signature the tool checked must SAY so, and one it refused must say that
+      // louder. Reporting only integrity and re-derivation is how an unchecked
+      // signature stayed invisible behind a green exit code.
+      const s = res.signature;
+      console.log(`      signature   ${!s || !s.present ? 'absent'
+        : (s.valid ? (s.identity_bound ? `ok, signer BOUND (${s.attributed_signer})`
+          : 'ok, but signer NOT bound (legacy v1)') : 'REFUSED')}`);
       for (const n of res.notes) console.log(`      - ${n}`);
     }
   }

@@ -136,11 +136,20 @@ $ obsign-verify --self-check
   ok  resealed_tampered_claim             REFUSED  (expected REFUSED)
   ...
 9/9 bundles behaved as declared.
+  ok  producer_signed_replay              SIGNER BOUND (A. Chen, Coherence Energy Labs)
+  ...
+  ok  binds stripped, examiner rewritten  REFUSED      (attributed nobody)
+
+3/3 producer-signed receipt(s) accepted with the signer bound; the binds-stripping forgery was refused.
 ```
 
 Exit `0` means every bundle got the verdict it declares — the two honest receipts
 verified and **all seven forgeries refused.** Refusing them is the job, so a clean
-run is not "9 verified".
+run is not "9 verified". It then verifies three receipts **signed by the producer,
+not by this package** (`data/conformance/`), and refuses the forgery that strips the
+`binds` list and rewrites the examiner. That is the round trip that was never once
+executed before 0.3.0 — and the reason 0.1.0–0.2.1 refused every genuine v2
+signature while their own tests stayed green.
 
 The one to look at is `resealed_tampered_claim`. Its output was edited, its receipt
 re-hashed, its signature re-applied — so it passes the integrity check cleanly and

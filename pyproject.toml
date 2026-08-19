@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 # This package is the VERIFIER, not the engine, so the longer name is the accurate one
 # regardless: it says what you install and what it does.
 name = "obsign-verify"
-version = "0.2.1"
+version = "0.3.0"
 description = "Re-derive an Obsign receipt's claim on your own machine, offline."
 readme = "README.md"
 license = "Apache-2.0"
@@ -74,7 +74,12 @@ where = ["src"]
 # the first cut of this file shipped neither, so both documented commands failed
 # for anyone who installed instead of cloning. ~64 KB, and it is the whole point
 # of the product: hand the sceptic the forgeries in the same breath as the tool.
-obsign_verify = ["py.typed", "data/*.json", "data/challenge/**/*"]
+# `data/conformance/**/*` is listed separately BECAUSE `data/*.json` does not recurse.
+# The producer-signed conformance corpus lives one directory down, so without this line
+# it is present in the source tree, green in CI, and ABSENT from the wheel -- which is
+# the same shape of failure as the one it exists to prevent: a check that passes
+# everywhere except where a stranger runs it.
+obsign_verify = ["py.typed", "data/*.json", "data/challenge/**/*", "data/conformance/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
