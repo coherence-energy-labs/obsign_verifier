@@ -226,10 +226,20 @@ jobs:
       - name: pip install obsign-verify, then run the challenge
         run: |
           set -eu
-          for i in 1 2 3 4 5 6; do
-            if pip install --quiet "obsign-verify[sig]==${GITHUB_REF_NAME#v}"; then break; fi
-            echo "not on the index yet, retry $i"; sleep 20
+          # v0.3.0: the index took >2 min to serve the new version; six 20 s tries
+          # ran out, and because the failure was swallowed by the `if`, the script
+          # fell through to `obsign-verify` and died with 127 "command not found" --
+          # a confusing symptom for "the package is not installed yet". Ten minutes
+          # of patience, then an EXPLICIT refusal that names the real cause.
+          installed=0
+          for i in $(seq 1 20); do
+            if pip install --quiet --no-cache-dir "obsign-verify[sig]==${GITHUB_REF_NAME#v}"; then installed=1; break; fi
+            echo "not on the index yet, retry $i/20"; sleep 30
           done
+          if [ "$installed" != 1 ]; then
+            echo "FAIL: obsign-verify==${GITHUB_REF_NAME#v} never appeared on PyPI within 10 minutes"
+            exit 1
+          fi
           obsign-verify --version
           obsign-verify --self-check | tee out.txt
           # [sig] is installed, so the producer-signed round trip MUST have run.
