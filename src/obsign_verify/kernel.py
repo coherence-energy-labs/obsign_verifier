@@ -25,10 +25,23 @@ from __future__ import annotations
 
 import hashlib
 
-try:
-    import numpy as np
-except ImportError:                                          # pragma: no cover
-    raise SystemExit("numpy is required: pip install numpy")
+
+def _np():
+    """numpy, imported on first use rather than at module import.
+
+    Only tau_field_fixed needs numpy; a replay receipt (obsign/replay/1) is pure
+    int64 and never touches it -- and replay is the common path a stranger runs.
+    Importing numpy eagerly charged EVERY verification ~50 ms of array-library
+    start-up, most of them for a receipt that never calls a single numpy function.
+    numpy is cached in sys.modules after the first import, so the second call is a
+    dict lookup; each kernel function binds the result once as a local, so the hot
+    evolve() loop pays nothing per iteration. Semantics are unchanged: where numpy
+    is present (every honest tau receipt) this returns the identical module."""
+    try:
+        import numpy as np
+    except ImportError:                                      # pragma: no cover
+        raise SystemExit("numpy is required for tau_field_fixed: pip install numpy")
+    return np
 
 
 # Verifier-side safety bounds on tau_field_fixed parameters. A receipt is a file an
@@ -86,6 +99,7 @@ def build_fixed_inputs(p: dict) -> dict:
     offline verification possible.
     """
     validate_params(p)
+    np = _np()
     frac_bits = int(p.get("frac_bits", 24))
     scale = 1 << frac_bits
     n = int(p["grid"])
@@ -122,6 +136,7 @@ def evolve(inp: dict) -> np.ndarray:
 
     `tdiv` truncates toward ZERO, not floor. On negative values the two differ.
     """
+    np = _np()
     scale = inp["SCALE"]
     frac_bits = int(scale).bit_length() - 1   # scale is 2**frac_bits, exactly
     n, steps = inp["n"], inp["steps"]
@@ -177,7 +192,7 @@ def array_sha256(a) -> str:
     re-executed result explicitly -- otherwise that metadata could be rewritten while
     the byte hash still agreed.
     """
-    return hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()
+    return hashlib.sha256(_np().ascontiguousarray(a).tobytes()).hexdigest()
 
 
 #: Kernels this verifier can re-execute. Anything else is UNVERIFIED by
