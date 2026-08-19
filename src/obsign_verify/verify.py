@@ -26,6 +26,29 @@ from . import replay as replaymod
 from .kernel import SUPPORTED_KERNELS, array_sha256, build_fixed_inputs, evolve
 
 
+def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
+    """Run step 3 and return whether it permits a `verified` verdict.
+
+    ONE place, because the fixed-kernel path and the replay path each had their own
+    copy of this three-line rule -- and a rule with two copies is a rule that gets
+    fixed in one of them.
+
+    A signature that is PRESENT but does not verify is a refusal. A signature that is
+    ABSENT is not: the replay rung stands on its own, which is the whole argument for
+    a verifier a stranger can run.
+    """
+    sig = sigmod.check(receipt)
+    result["signature"] = sig
+    if sig["present"] and not sig["valid"]:
+        notes.append(sig["detail"])
+    # An unattested `case` on an otherwise valid signature is not a refusal, but it
+    # must reach the reader: it is the block a court report prints first.
+    for key in sig.get("unbound_metadata") or []:
+        notes.append(f"{key!r} is present but NOT covered by the signature - "
+                     f"unattested annotation, not an attested fact")
+    return (not sig["present"]) or sig["valid"]
+
+
 def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     """Re-derive a receipt whose computation travels inside it.
 
@@ -46,14 +69,14 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     params = receipt.get("params")
     if not isinstance(params, dict):
         notes.append("replay receipt carries no params; nothing to re-execute")
-        result["signature"] = sigmod.check(receipt)
+        _signature_gate(receipt, result, notes)
         return result
 
     prog = params.get("program")
     inputs = params.get("inputs")
     if not isinstance(prog, dict) or not isinstance(inputs, list):
         notes.append("replay params must carry {program: object, inputs: [int]}")
-        result["signature"] = sigmod.check(receipt)
+        _signature_gate(receipt, result, notes)
         return result
 
     stated_digest = params.get("program_sha256")
@@ -67,7 +90,7 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
         out = replaymod.run(prog, inputs)
     except replaymod.Trap as trap:
         notes.append(f"program refused: {trap}")
-        result["signature"] = sigmod.check(receipt)
+        _signature_gate(receipt, result, notes)
         return result
 
     got = replaymod.output_sha256(out)
@@ -84,11 +107,7 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     if not len_ok:
         notes.append("output length does not match the re-executed result")
 
-    sig = sigmod.check(receipt)
-    result["signature"] = sig
-    sig_ok = (not sig["present"]) or sig["valid"]
-    if sig["present"] and not sig["valid"]:
-        notes.append(sig["detail"])
+    sig_ok = _signature_gate(receipt, result, notes)
 
     result["verified"] = bool(result["integrity"] and result["reproduced"]
                               and digest_ok and len_ok and sig_ok)
@@ -130,13 +149,13 @@ def verify(receipt: dict) -> dict:
             notes.append(f"kernel {kernel!r} cannot be re-executed by this verifier "
                          f"(supported: {', '.join(SUPPORTED_KERNELS)}) - "
                          f"NOT verified by re-derivation")
-            result["signature"] = sigmod.check(receipt)
+            _signature_gate(receipt, result, notes)
             return result
 
         params = receipt.get("params")
         if not isinstance(params, dict):
             notes.append("receipt carries no params; nothing to re-execute")
-            result["signature"] = sigmod.check(receipt)
+            _signature_gate(receipt, result, notes)
             return result
 
         inp = build_fixed_inputs(params)
@@ -169,13 +188,7 @@ def verify(receipt: dict) -> dict:
         if not (shape_ok and dtype_ok):
             notes.append("output shape/dtype does not match the re-executed result")
 
-        sig = sigmod.check(receipt)
-        result["signature"] = sig
-        # A signature that is PRESENT but does not verify is a refusal. A signature
-        # that is ABSENT is not: the replay rung stands on its own.
-        sig_ok = (not sig["present"]) or sig["valid"]
-        if sig["present"] and not sig["valid"]:
-            notes.append(sig["detail"])
+        sig_ok = _signature_gate(receipt, result, notes)
 
         result["verified"] = bool(result["integrity"] and result["reproduced"]
                                   and input_ok and shape_ok and dtype_ok and sig_ok)

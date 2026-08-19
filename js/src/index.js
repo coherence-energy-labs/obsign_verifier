@@ -27,5 +27,5 @@ module.exports = {
   canonicalSha256: canonical.canonicalSha256,
   integrity: canonical.integrity,
   replay,
-  VERSION: '0.2.1',
+  VERSION: '0.3.0',
 };

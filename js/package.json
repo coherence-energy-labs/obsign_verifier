@@ -1,6 +1,6 @@
 {
   "name": "obsign-verify",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Re-derive an Obsign receipt's claim on your own machine, offline. Zero dependencies.",
   "license": "Apache-2.0",
   "author": "Coherence Energy Labs",

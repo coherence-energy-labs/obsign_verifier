@@ -72,7 +72,77 @@ def _self_check(quiet: bool) -> int:
         print(f"{n - wrong}/{n} bundles behaved as declared."
               + ("" if wrong else "  Every forgery was refused, including the resealed"
                                   " one whose signature is intact and whose claim is false."))
-    return 1 if wrong else 0
+
+    # THE BOUNDARY CROSSING, ON THE INSTALLED ARTIFACT. The receipts below were signed
+    # by the PRODUCER, not by this package. Through 0.2.1 this verifier refused every
+    # one of them (it checked a different message than the producer signed) while its
+    # own test suite stayed green, because the suite only ever verified signatures it
+    # had made itself. A stranger running `--self-check` on the wheel they installed
+    # is the one place that cannot be fooled by a test that talks to itself.
+    corpus = sorted(data_path("conformance").glob("*.json"))
+    if not corpus:
+        print("no producer-signed conformance receipts shipped with this package -- "
+              "the install is incomplete", file=sys.stderr)
+        return 1
+
+    # Signature checking is an optional extra BY DESIGN (integrity and re-derivation
+    # need no crypto library). Without it, every signed receipt is REFUSED -- "I cannot
+    # check this" never resolves to a pass -- which is correct behaviour, not a broken
+    # install. So the corpus is not counted as failed here; it is reported, by name, as
+    # NOT EXERCISED, and the exit code says nothing about signatures. A skip that is
+    # named is a skip; a skip that is silent is a pass nobody earned.
+    try:
+        import cryptography  # noqa: F401
+        can_sign = True
+    except ImportError:
+        can_sign = False
+
+    sig_wrong = 0
+    for path in corpus:
+        receipt = load_receipt(path.read_text(encoding="utf-8"))
+        res = verify(receipt)
+        sig = res["signature"]
+        ok = res["verified"] and sig["valid"] and sig["identity_bound"]
+        if can_sign:
+            sig_wrong += not ok
+        if not quiet:
+            if not can_sign:
+                print(f"  --  {path.stem:<36}{'NOT CHECKED':<13}"
+                      f"(cryptography not installed; the receipt is REFUSED, not passed)")
+            else:
+                print(f"  {'ok  ' if ok else '!!  '}{path.stem:<36}"
+                      f"{'SIGNER BOUND' if ok else 'REFUSED':<13}"
+                      f"({sig['attributed_signer'] if ok else sig['detail']})")
+
+    # ...and the forgery the public verifier once accepted: strip `binds`, rewrite
+    # the examiner on a cryptographically valid receipt. Must be refused, and must
+    # attribute nobody. A check nobody has watched block the attack is unverified.
+    # (Without cryptography it is refused for the wrong reason -- so it only counts
+    # as evidence when the signature could actually have been accepted.)
+    base = load_receipt(data_path("conformance", "producer_signed_replay.json")
+                        .read_text(encoding="utf-8"))
+    base["signature"].pop("binds", None)
+    base["case"]["examiner"] = "Dr. J. Smith, FBI Digital Forensics"
+    forged = verify(base)
+    refused = (not forged["verified"] and not forged["signature"]["valid"]
+               and forged["signature"]["attributed_signer"] is None)
+    sig_wrong += not refused
+    if not quiet:
+        n = len(corpus)
+        print(f"  {'ok  ' if refused else '!!  '}{'binds stripped, examiner rewritten':<36}"
+              f"{'REFUSED' if refused else 'ACCEPTED':<13}"
+              f"({'attributed nobody' if refused else 'FORGERY ACCEPTED'})")
+        print()
+        if not can_sign:
+            print(f"0/{n} producer-signed receipt(s) exercised: signature checking is NOT "
+                  f"installed. Signed receipts are refused, never passed. To verify "
+                  f"signatures: pip install 'obsign-verify[sig]'")
+        else:
+            accepted = n - (sig_wrong - (not refused))
+            print(f"{accepted}/{n} producer-signed receipt(s) accepted with the signer bound"
+                  + ("" if sig_wrong else "; the binds-stripping forgery was refused."))
+
+    return 1 if (wrong or sig_wrong) else 0
 
 
 def main(argv: list[str] | None = None) -> int:

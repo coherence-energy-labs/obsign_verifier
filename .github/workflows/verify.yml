@@ -109,6 +109,87 @@ jobs:
               sys.exit("verdict mismatch on this platform:\n  " + "\n  ".join(wrong))
           print(f"all {len(bundles)} bundles got their declared verdict")
 
+      # THE BOUNDARY-CROSSING CHECK. Its absence is the whole reason a three-release
+      # signature break shipped: the producer prefixed a domain tag to the signed
+      # message, this verifier signed the bare hash, and every genuine v2 receipt
+      # reported InvalidSignature in the tool customers are told to run. Both test
+      # suites stayed green because each one signed AND verified with itself.
+      #
+      # These receipts were signed by the producer. Nothing in this repository made
+      # them. If this step goes red, the two implementations have diverged and at
+      # least one of them is lying about a signature.
+      - name: A receipt the PRODUCER signed must verify here
+        shell: python
+        run: |
+          import sys
+          from obsign_verify import data_path, load_receipt, verify
+
+          corpus = sorted(data_path("conformance").glob("*.json"))
+          assert len(corpus) >= 3, f"only {len(corpus)} conformance receipt(s) -- vacuous"
+
+          bad = []
+          for p in corpus:
+              res = verify(load_receipt(p.read_text(encoding="utf-8")))
+              sig = res["signature"]
+              print(f"  {p.name}")
+              print(f"      integrity={res['integrity']} reproduced={res['reproduced']} "
+                    f"sig.valid={sig['valid']} identity_bound={sig['identity_bound']}")
+              print(f"      signer={sig['attributed_signer']!r} bound={sig['bound_metadata']} "
+                    f"unbound={sig['unbound_metadata']}")
+              if not (sig["present"] and sig["valid"] and sig["identity_bound"]):
+                  bad.append(f"{p.name}: {sig['detail']}")
+          if bad:
+              sys.exit("this verifier REFUSES a receipt the producer signed:\n  "
+                       + "\n  ".join(bad))
+          print(f"all {len(corpus)} producer-signed receipt(s) accepted, signer bound")
+
+      # A fix nobody has watched block the original attack is unverified. This builds
+      # the forgeries in the job and requires a refusal for each.
+      - name: The signature forgeries must be refused
+        shell: python
+        run: |
+          import copy, json, sys
+          from obsign_verify import data_path, load_receipt, verify
+
+          base = json.loads(data_path("conformance", "producer_signed_replay.json")
+                            .read_text(encoding="utf-8"))
+          assert verify(load_receipt(json.dumps(base)))["verified"], \
+              "the honest receipt must pass, or every refusal below is meaningless"
+
+          def forge(name, fn):
+              r = copy.deepcopy(base)
+              fn(r)
+              return name, verify(load_receipt(json.dumps(r)))
+
+          FBI = "Dr. J. Smith, FBI Digital Forensics"
+          cases = [
+              forge("binds key deleted + examiner rewritten",
+                    lambda r: (r["signature"].pop("binds"),
+                               r["case"].__setitem__("examiner", FBI))),
+              forge("binds emptied + examiner rewritten",
+                    lambda r: (r["signature"].__setitem__("binds", []),
+                               r["case"].__setitem__("examiner", FBI))),
+              forge("bound case tampered",
+                    lambda r: r["case"].__setitem__("examiner", FBI)),
+              forge("signer rewritten",
+                    lambda r: r["signature"].__setitem__("signer", FBI)),
+              forge("signature from another key",
+                    lambda r: r["signature"].__setitem__("public_key", "00" * 32)),
+              forge("signature over another body",
+                    lambda r: r["signature"].__setitem__("sig", "ab" * 64)),
+          ]
+          leaked = []
+          for name, res in cases:
+              sig = res["signature"]
+              ok = (not sig["valid"]) and (not res["verified"]) \
+                  and sig["attributed_signer"] is None
+              print(f"  {'refused' if ok else 'ACCEPTED'}  {name}")
+              if not ok:
+                  leaked.append(name)
+          if leaked:
+              sys.exit("FORGERY ACCEPTED by the verifier: " + "; ".join(leaked))
+          print(f"all {len(cases)} forgeries refused, and none attributed a signer")
+
       - name: The published stream must re-derive here
         run: python tools/dogfood.py --check
 
@@ -138,6 +219,62 @@ jobs:
         run: |
           obsign-verify --version
           obsign-verify --self-check
+
+  # The JavaScript port's tests ran ONLY in release.yml, so a defect in it lived until
+  # someone cut a release. That is how `verified` shipped without the signature in its
+  # conjunction: an invalid signature printed VERIFIED and exited 0, and no push-time
+  # job ever executed the port at all.
+  javascript:
+    name: javascript port · node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]      # 18 is the floor `engines` declares
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Test suite
+        working-directory: js
+        run: npm test
+
+      # The exit code IS the interface. A note in stdout saying "not checked" is
+      # documentation; a pipeline reads `$?`. This asserts the status directly.
+      - name: A forged signature must produce a FAILING exit code
+        working-directory: js
+        run: |
+          set -eu
+          GOOD=../src/obsign_verify/data/conformance/producer_signed_replay.json
+          node bin/obsign-verify.js "$GOOD"
+          echo "--- now the same receipt with the signature replaced by nonsense ---"
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            r.signature.sig = "ab".repeat(64);
+            fs.writeFileSync("forged.json", JSON.stringify(r, null, 1));
+          ' "$GOOD"
+          if node bin/obsign-verify.js forged.json; then
+            echo "FAIL: a forged signature exited 0 -- the signature is not gating the verdict"
+            exit 1
+          fi
+          echo "--- and with the binds list stripped and the examiner rewritten ---"
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            delete r.signature.binds;
+            r.case.examiner = "Dr. J. Smith, FBI Digital Forensics";
+            fs.writeFileSync("stripped.json", JSON.stringify(r, null, 1));
+          ' "$GOOD"
+          if node bin/obsign-verify.js stripped.json; then
+            echo "FAIL: stripping binds exited 0 -- the bound-metadata check is being skipped"
+            exit 1
+          fi
+          rm -f forged.json stripped.json
+          echo "both forgeries exited non-zero"
 
   gates:
     name: doc gates
@@ -190,10 +327,13 @@ jobs:
               "stream": list(pathlib.Path("stream").glob("*.json")),
               "bundles": list(data_path("challenge", "bundles").glob("*/receipt.json")),
               "vectors": [data_path("conformance_vectors.json")],
+              "conformance": list(data_path("conformance").glob("*.json")),
           }
           for name, files in groups.items():
               assert files, f"'{name}' matched NOTHING -- this check would be vacuous"
           assert len(groups["bundles"]) >= 9, f"only {len(groups['bundles'])} bundle(s)"
+          assert len(groups["conformance"]) >= 3, \
+              f"only {len(groups['conformance'])} conformance receipt(s)"
           pinned = [p for fs in groups.values() for p in fs]
           bad = [str(p) for p in pinned if crlf in p.read_bytes()]
           if bad:

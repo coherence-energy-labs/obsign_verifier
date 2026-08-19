@@ -4,7 +4,7 @@
  *
  *   1. integrity    `receipt_sha256` recomputes from the claim   -- every receipt
  *   2. reproduced   re-running the program reproduces the output -- replay receipts
- *   3. signature    NOT IMPLEMENTED HERE, and reported as such
+ *   3. signature    Ed25519 over what the signature actually covers -- see signature.js
  *   4. issuer trust out of scope, deliberately, in every implementation
  *
  * WHAT THIS IMPLEMENTATION DOES NOT DO, said plainly rather than discovered.
@@ -15,12 +15,15 @@
  * forged either -- "I cannot check this" is a third answer and collapsing it into
  * either of the other two is how a verifier starts lying.
  *
- * It does not check signatures. Rather than ship a half-checked signature, the field
- * is reported `null` with a note pointing at the Python implementation. An unsigned
- * PASS on the replay rung is still meaningful: you recomputed the number yourself.
+ * IT USED NOT TO CHECK SIGNATURES, AND THAT IS THE BUG THIS HEADER NOW RECORDS.
+ * The omission was disclosed in a note, which was honest and useless: `verified` was
+ * computed WITHOUT the signature, so a receipt carrying a signature over nothing at
+ * all printed VERIFIED and exited 0. Documentation is not a control. Whatever this
+ * file declines to check, it must also decline to PASS.
  */
 
 const { integrity } = require('./canonical.js');
+const sigmod = require('./signature.js');
 const replay = require('./replay.js');
 
 const plain = (v) => {
@@ -38,6 +41,25 @@ const plain = (v) => {
   return v;
 };
 
+/**
+ * Run step 3 and return whether it permits a `verified` verdict. ONE place, so the
+ * rule cannot be fixed in one branch and left standing in another.
+ *
+ * A signature that is PRESENT but does not verify is a refusal. A signature that is
+ * ABSENT is not: the replay rung stands on its own, which is the whole argument for a
+ * verifier a stranger can run.
+ */
+function signatureGate(receipt, result, notes) {
+  const sig = sigmod.check(receipt);
+  result.signature = sig;
+  if (sig.present && !sig.valid) notes.push(sig.detail);
+  for (const key of sig.unbound_metadata || []) {
+    notes.push(`'${key}' is present but NOT covered by the signature - `
+      + 'unattested annotation, not an attested fact');
+  }
+  return !sig.present || sig.valid;
+}
+
 function verify(receipt) {
   const notes = [];
   const result = { integrity: false, reproduced: null, signature: null, verified: false, notes };
@@ -51,17 +73,20 @@ function verify(receipt) {
     if (kernel !== replay.SPEC) {
       notes.push(`kernel ${kernel} cannot be re-executed by this implementation `
         + '(JavaScript re-derives obsign/replay/1 only) - NOT verified by re-derivation');
+      signatureGate(receipt, result, notes);
       return result;
     }
 
     const params = plain(receipt.__obj.get('params'));
     if (params === null || typeof params !== 'object') {
       notes.push('replay receipt carries no params; nothing to re-execute');
+      signatureGate(receipt, result, notes);
       return result;
     }
     const { program, inputs } = params;
     if (program === null || typeof program !== 'object' || !Array.isArray(inputs)) {
       notes.push('replay params must carry {program: object, inputs: [int]}');
+      signatureGate(receipt, result, notes);
       return result;
     }
 
@@ -78,6 +103,7 @@ function verify(receipt) {
     } catch (e) {
       if (!(e instanceof replay.Trap)) throw e;
       notes.push(`program refused: ${e.message}`);
+      signatureGate(receipt, result, notes);
       return result;
     }
 
@@ -91,11 +117,12 @@ function verify(receipt) {
     const lenOk = declared.length === undefined || declared.length === null || declared.length === out.length;
     if (!lenOk) notes.push('output length does not match the re-executed result');
 
-    if (receipt.__obj.has('signature')) {
-      notes.push('signature present but NOT checked by this implementation - use the Python package');
-    }
+    // `sigOk` is a TERM IN THE CONJUNCTION, which is the entire fix. It was absent,
+    // and the exit code -- the thing a pipeline reads -- said VERIFIED over a
+    // signature nobody had checked.
+    const sigOk = signatureGate(receipt, result, notes);
 
-    result.verified = Boolean(result.integrity && result.reproduced && digestOk && lenOk);
+    result.verified = Boolean(result.integrity && result.reproduced && digestOk && lenOk && sigOk);
     return result;
   } catch (e) {
     notes.push(`verification error, treated as NOT verified: ${e.name}: ${e.message}`);

@@ -203,8 +203,54 @@ def test_a_legacy_v1_signature_verifies_but_attributes_NOBODY():
     assert verify(r)["signature"]["attributed_signer"] is None
 
 
+def _sign_v2(receipt, key, signer="Alice", binds=()):
+    """Sign a receipt the way the PRODUCER does, including the domain tag.
+
+    Every test in this file used to roll its own v2 signature over the BARE canonical
+    hash, matching the verifier because both were wrong in the same direction. The
+    tests passed and every genuine receipt failed. This helper exists so there is one
+    place to be wrong, and `test_producer_conformance.py` checks it against bytes the
+    real producer emitted rather than against our own idea of them.
+    """
+    from obsign_verify.signature import SIG_DOMAIN_V2, binds_hash
+    pub = key.public_key().public_bytes_raw().hex()
+    bh = binds_hash(receipt, binds)
+    covered = {"spec": "obsign/signature/v2", "alg": "ed25519", "public_key": pub,
+               "receipt_sha256": receipt["receipt_sha256"], "signer": signer,
+               "binds_sha256": bh}
+    receipt["signature"] = {
+        "spec": "obsign/signature/v2", "alg": "ed25519", "signer": signer,
+        "public_key": pub, "binds": sorted(k for k in binds if k in receipt),
+        "binds_sha256": bh,
+        "sig": key.sign(SIG_DOMAIN_V2 + canonical_sha256(covered).encode("ascii")).hex(),
+    }
+    return receipt
+
+
 def test_a_v2_signature_binds_the_signer():
-    cryptography = pytest.importorskip("cryptography")
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    r = _sign_v2(_honest_receipt(VECTORS[0]), Ed25519PrivateKey.generate())
+    sig = verify(r)["signature"]
+    assert sig["valid"] and sig["identity_bound"]
+    assert sig["attributed_signer"] == "Alice"
+
+    # Rewriting the signer now breaks it -- that is the upgrade over v1.
+    r["signature"]["signer"] = "Mallory"
+    assert verify(r)["signature"]["valid"] is False
+
+
+def test_a_v2_signature_over_the_BARE_hash_is_refused():
+    """The domain tag is not decoration, and this is the test whose absence let a
+    three-release cross-implementation break ship.
+
+    Without the tag the signed bytes are a bare 64-char hex digest -- exactly what a
+    v1 signature covers -- so a v1 signature could be re-labelled `spec: v2` and
+    promoted from "attributes nobody" to `identity_bound: true`. It also happens to be
+    what this verifier itself used to sign, which is why no test caught it.
+    """
+    pytest.importorskip("cryptography")
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     r = _honest_receipt(VECTORS[0])
@@ -213,15 +259,33 @@ def test_a_v2_signature_binds_the_signer():
     covered = {"spec": "obsign/signature/v2", "alg": "ed25519", "public_key": pub,
                "receipt_sha256": r["receipt_sha256"], "signer": "Alice",
                "binds_sha256": None}
-    r["signature"] = dict(covered,
+    r["signature"] = dict(covered, binds=[],
                           sig=key.sign(canonical_sha256(covered).encode("ascii")).hex())
     sig = verify(r)["signature"]
-    assert sig["valid"] and sig["identity_bound"]
-    assert sig["attributed_signer"] == "Alice"
+    assert sig["valid"] is False, "an undomain-separated v2 signature must be REFUSED"
+    assert sig["identity_bound"] is False
+    assert sig["attributed_signer"] is None
 
-    # Rewriting the signer now breaks it -- that is the upgrade over v1.
+
+def test_a_v1_signature_cannot_be_relabelled_as_v2():
+    """The concrete attack the domain tag blocks: take a genuine v1 signature (which
+    covers the bare receipt hash and attributes NOBODY) and rewrite `spec` to v2, so
+    the verifier reports the uncovered name as bound."""
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    r = _honest_receipt(VECTORS[0])
+    key = Ed25519PrivateKey.generate()
+    r["signature"] = {"alg": "ed25519", "signer": "Alice",
+                      "public_key": key.public_key().public_bytes_raw().hex(),
+                      "sig": key.sign(r["receipt_sha256"].encode("ascii")).hex()}
+    assert verify(r)["signature"]["valid"] is True          # honest v1
+
+    r["signature"]["spec"] = "obsign/signature/v2"          # the promotion attempt
     r["signature"]["signer"] = "Mallory"
-    assert verify(r)["signature"]["valid"] is False
+    sig = verify(r)["signature"]
+    assert sig["valid"] is False
+    assert sig["attributed_signer"] is None
 
 
 def test_an_unknown_algorithm_is_refused_not_ignored():
