@@ -24,7 +24,7 @@ questions underneath it, both about SOURCE:
   narrow with an explicit `wrap`, so a mistake in that shared strategy is invisible to
   both, while Rust runs native i64 with `overflow-checks` on.
 
-WHAT THE CAMPAIGN FOUND, AND WHERE IT STANDS
+WHAT THE CAMPAIGN FOUND
 
 Zero result divergences, first run to last: the interpreter, the Python VM, the JS VM
 and the Rust VM agreed on every program and every input the campaign reached, traps
@@ -37,19 +37,17 @@ end instead of being refused by it:
     three diagnostics formatting one on the way OUT  ValueError raised inside a raise
     an oracle with no MAX_MEM                      it ran what the compiler refused
 
-All of them are closed. `corpus/rl_source/` keeps them closed: nine vectors, each
-carrying the bytes, the refusal they must now produce, and the prose of the defect they
-came from. A settled vector is marked `agreed` and is NOT deleted -- the bytes that
-once crashed the lexer are the cheapest possible test that it does not crash any more,
-and the history is the only artifact that says why the limit sits where it sits.
+All are closed, and the tolerance lists are EMPTY: any crash class at all, and any
+oracle/compiler accept split at all, now fails the campaign outright. That is the point
+of routing tolerance through the corpus rather than through a list in the test -- the
+list empties itself as the defects close, and nothing has to remember to remove it.
 
-One residual is marked `open` and pinned by the single `xfail(strict=True)` left in
-this file: an array length of exactly 1048575 or 1048576 still parses and then fails in
-codegen, because the guard that closed the rest bounds the declared LENGTH rather than
-the total cell count.
-
-A crash class the corpus does not name fails the campaign outright, which is what makes
-this a ratchet rather than a report.
+`corpus/rl_source/` holds nine vectors that keep them closed. A settled vector is
+marked `agreed` and is NOT deleted: the bytes that once crashed the lexer are the
+cheapest possible test that it does not crash any more, and the `history` field on each
+is the only artifact that says why the limit sits where it sits. The memory bound is
+pinned from both sides, because the first fix for it was right above the limit and
+wrong for the two lengths just below.
 
 `OBSIGN_FUZZ=full` runs the long campaign; `OBSIGN_FUZZ_CASES` and `OBSIGN_FUZZ_SEEDS`
 set the knobs directly.
@@ -520,26 +518,24 @@ def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
         "oracle enforces no MAX_MEM")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: the parse-time memory guard bounds the declared array LENGTH, not the total "
-    "cell count, so lengths of 1048575 and 1048576 parse and then fail in codegen."))
-@pytest.mark.parametrize("length", [1_048_575, 1_048_576], ids=["max-1", "max"])
-def test_the_two_lowerings_agree_at_the_memory_limit(length):
-    """A two-wide band where the oracle still accepts what the compiler refuses.
+@pytest.mark.parametrize("length,admitted", [(1_048_574, True), (1_048_575, False),
+                                            (1_048_576, False), (1_048_577, False)],
+                         ids=["under", "max-1", "max", "over"])
+def test_the_two_lowerings_agree_at_the_memory_limit(length, admitted):
+    """The memory bound, pinned from BOTH sides, because it was wrong in between.
 
-    Moving MAX_MEM into `parse_program` closed almost all of this: `arr m[1048577]` and
-    everything above it is now refused at parse, by both paths, before either runs. But
-    the guard compares the declared LENGTH against MAX_MEM, and a program needs cells
-    for its scalars and its output window too -- so at exactly the limit, and one below
-    it, parse says yes and codegen then says "program needs 1048578 cells, over the
-    1048576 limit". 1048574 compiles; 1048577 is refused at parse; these two are the
-    whole band.
+    Moving MAX_MEM into `parse_program` -- the last step the oracle and the compiler
+    share -- closed almost all of this. It left a two-wide band: the guard compared the
+    declared array LENGTH against MAX_MEM while codegen counted the cells the program
+    actually needs, so an array of exactly 1048576 parsed and then failed in codegen
+    with "program needs 1048578 cells", and `interpret_source` (which runs only
+    `parse_program`) would allocate a million cells for a program the compiler would
+    not build.
 
-    It is narrow and it is still the same shape of defect: the accept boundary of the
-    language is `compile_source`, not `parse_program`, and `interpret_source` -- which
-    only runs `parse_program` -- will happily allocate a million cells for a program the
-    compiler will not build. A guard that measures the wrong quantity closes every case
-    except the ones where the difference between the two quantities is what matters.
+    A guard that measures the wrong quantity closes every case except the ones where
+    the difference between the two quantities is what matters, which is why this test
+    checks the length that must COMPILE as well as the ones that must not: a bound
+    pinned from one side only can be fixed by moving it anywhere.
     """
     src = f"input a; arr m[{length}]; output a;"
     parse = front_end(src, parse_program)[0]
@@ -547,6 +543,9 @@ def test_the_two_lowerings_agree_at_the_memory_limit(length):
     assert parse == compile_, (
         f"parse_program says {parse!r} and compile_source says {compile_!r} for an "
         f"array of {length} cells -- the two lowerings admit different languages")
+    assert (compile_ == "accept") is admitted, (
+        f"an array of {length} cells is {'refused' if compile_ != 'accept' else 'admitted'}; "
+        f"MAX_MEM is 1048576 and the program needs two more cells besides the array")
 
 
 @pytest.mark.skipif(not _HAS_RUST, reason="rust/target/release/obsign-verify-rs is not built")

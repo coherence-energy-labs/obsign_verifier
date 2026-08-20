@@ -29,10 +29,10 @@ Two properties are asserted of every generated document:
   CANONICAL BYTES. For a document they all load, the canonical string must be
   byte-identical, because those bytes are hashed and that hash is the claim.
 
-WHAT THE CAMPAIGN FOUND, AND WHERE IT STANDS
+WHAT THE CAMPAIGN FOUND
 
 Six live divergences, every one of them a place where JavaScript read bytes the other
-implementations did not:
+implementations would not:
 
     MAX_STRING_BYTES enforced in Python and nowhere in JavaScript -- declared in
       js/src/canonical.js and never read
@@ -44,25 +44,20 @@ implementations did not:
       last-value-wins, no depth, member, digit, string or size bound
     a verify page that died of stack exhaustion instead of refusing
     a JavaScript decoder that repaired invalid UTF-8, collapsing distinct FILES onto
-      one claim hash
+      one claim hash -- three different files, one receipt_sha256
 
 Rust settled the two that were Python-against-JavaScript: a third reading by another
 author agreed with Python on both, which is what turns "two implementations differ"
 into "one implementation is the outlier".
 
-All but the last are closed. `corpus/receipt_bytes/` keeps them closed with nine
-vectors, each carrying the bytes, the answer every implementation must now give, and
-the prose of the divergence it came from. A vector is marked `agreed` when it settles
-and is NOT deleted: the bytes are the cheapest possible regression test, and the
-history is the only artifact that says why the limit sits where it sits.
-
-The last one is marked `open` in two vectors and pinned by the one `xfail(strict=True)`
-left here. The npm CLI now refuses invalid UTF-8; the verify page still substitutes
-U+FFFD, so three different files still share one `receipt_sha256` on the page a
-stranger is told to use.
-
-A divergence the corpus does NOT name fails the campaign outright. That is the whole
-point of routing tolerance through the corpus rather than through a list in the test.
+All six are closed, and the tolerance list is EMPTY: `_KNOWN` is built only from
+vectors still marked `open`, and there are none, so any divergence at all now fails the
+campaign. `corpus/receipt_bytes/` holds nine vectors that keep it that way. A settled
+vector is marked `agreed` and is NOT deleted -- the bytes that once loaded in one
+implementation and not another are the cheapest possible test that they now get one
+answer, and each carries a `history` field, which is the only artifact that says WHY
+the limit sits where it sits. Delete the vector and you keep the number and lose the
+reason.
 
 RUNNING IT LONGER
 
@@ -744,17 +739,14 @@ def test_two_different_files_do_not_share_one_claim_hash():
 
 
 @pytest.mark.skipif(_BROWSER is None, reason="the producer's verify-core.js is not here")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: the verify page still decodes invalid UTF-8 leniently, so two distinct "
-    "receipt files canonicalise to the same bytes and share one claim hash."))
 def test_two_different_files_do_not_share_one_claim_hash_in_the_browser():
     r"""The same property, on the parser a stranger actually reaches.
 
-    The npm CLI now refuses these bytes outright ("receipt is not valid UTF-8"), and
-    Python and Rust never open the files at all. `web/verify/verify-core.js` still
-    receives them through a lenient decoder, so `{"a":"\xff"}` and `{"a":"\x80"}` --
-    and `{"a":"\xc3"}`, a third file -- all become one string, one canonical form and
-    one `receipt_sha256`.
+    Python and Rust never open these files at all, and both JavaScript parsers now
+    refuse them with "receipt is not valid UTF-8". Before that, `{"a":"\xff"}`,
+    `{"a":"\x80"}` and `{"a":"\xc3"}` -- three different files -- reached the page
+    through a lenient decoder and became one string, one canonical form and one
+    `receipt_sha256`.
 
     That is the exact property canonical.py names when it explains `allow_nan=False`:
     permitting NaN "would let two different receipts share a canonical form". A

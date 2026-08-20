@@ -323,7 +323,7 @@ class Parser:
         try:
             if self._bdepth > self.MAX_BLOCK_DEPTH:
                 raise ParseError(
-                    f"blocks nested deeper than {self.MAX_BLOCK_DEPTH}", self._peek().pos)
+                    f"blocks nested deeper than {self.MAX_BLOCK_DEPTH - 1}", self._peek().pos)
             return self._parse_block_inner()
         finally:
             self._bdepth -= 1
@@ -414,7 +414,7 @@ class Parser:
         if self._depth > self.MAX_EXPR_DEPTH:
             self._depth -= 1
             raise ParseError(
-                f"expression nested deeper than {self.MAX_EXPR_DEPTH}", self._peek().pos)
+                f"expression nested deeper than {self.MAX_EXPR_DEPTH - 1}", self._peek().pos)
         try:
             e = self._bin(0)
         finally:
@@ -432,7 +432,7 @@ class Parser:
                     deepest = d
                     if deepest > self.MAX_EXPR_DEPTH:
                         raise ParseError(
-                            f"expression tree deeper than {self.MAX_EXPR_DEPTH}",
+                            f"expression tree deeper than {self.MAX_EXPR_DEPTH - 1}",
                             getattr(node, "pos", None) or self._peek().pos)
                 for f in ("left", "right", "operand", "cond", "index", "base"):
                     child = getattr(node, f, None)
@@ -469,7 +469,7 @@ class Parser:
             if self._depth > self.MAX_EXPR_DEPTH:
                 self._depth -= 1
                 raise ParseError(
-                    f"expression nested deeper than {self.MAX_EXPR_DEPTH}", t.pos)
+                    f"expression nested deeper than {self.MAX_EXPR_DEPTH - 1}", t.pos)
             try:
                 self._next()
                 operand = self._unary()
