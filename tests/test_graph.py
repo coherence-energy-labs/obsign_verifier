@@ -291,3 +291,54 @@ def test_cli_chain_mode_verdicts_and_exit_codes(capsys):
     assert "CHAIN VERIFIED" in capsys.readouterr().out
     assert cli.main(["--chain", chain_files[0], str(CHAIN / "firm_root.json")]) == 1
     assert "CHAIN INCOMPLETE" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ hostile edges
+def test_a_linked_parent_with_no_inputs_list_is_refused_not_crashed():
+    prog = compile_source("input a; output a + 1;")
+    child = mint.replay_receipt(prog, [1])
+    ln, _ = mint.link(child, dst_offset=0)
+    hostile = {"spec": "obsign/receipt/v1", "kernel": "obsign/replay/1",
+               "params": {"links": [ln]},            # no program, no inputs
+               "output": {"sha256": "0" * 64, "length": 1}}
+    hostile = reseal(hostile)
+    g = verify_graph([child, hostile])
+    node = g["nodes"][hostile["receipt_sha256"]]
+    assert node["verified"] is False                  # no program to re-execute
+    assert node["links_ok"] is False
+    assert any("outside this receipt's inputs" in n for n in node["notes"])
+    assert g["graph_verified"] is False
+
+
+def test_a_link_target_that_traps_cannot_bind():
+    """A child whose program traps on its own inputs fails standalone AND cannot
+    lend values to a link -- both reported, neither crashing."""
+    prog = compile_source("input a, b; output a / b;")
+    child = mint.replay_receipt(prog, [10, 5])        # honest: 10/5
+    ln, values = mint.link(child, dst_offset=0)
+    parent_prog = compile_source("input x; output x * 3;")
+    parent = mint.replay_receipt(parent_prog, values, links=[ln])
+    # now sabotage the child so re-execution traps (divide by zero), and reseal
+    child["params"]["inputs"][1] = 0
+    reseal(child)
+    g = verify_graph([child, parent])
+    child_node = g["nodes"][child["receipt_sha256"]]
+    assert child_node["verified"] is False            # its own re-derivation refuses
+    parent_node = g["nodes"][parent["receipt_sha256"]]
+    # the ORIGINAL child digest the link names no longer exists -> incomplete
+    assert parent_node["links_ok"] == "incomplete"
+    assert g["graph_verified"] is False
+
+
+def test_links_on_a_non_replay_parent_are_unsupported_not_ignored():
+    prog = compile_source("input a; output a + 1;")
+    child = mint.replay_receipt(prog, [1])
+    ln, _ = mint.link(child, dst_offset=0)
+    odd = {"spec": "obsign/receipt/v1", "kernel": "tau_field_fixed",
+           "params": {"grid": 8, "links": [ln]},
+           "output": {"sha256": "0" * 64}}
+    odd = reseal(odd)
+    g = verify_graph([child, odd])
+    node = g["nodes"][odd["receipt_sha256"]]
+    assert node["links_ok"] is False
+    assert any("not supported" in n for n in node["notes"])

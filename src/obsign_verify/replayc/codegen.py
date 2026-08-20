@@ -31,6 +31,13 @@ WHAT THE OPTIMIZER DOES, and why each transformation is trap-faithful:
     program that traps when that line runs must still trap -- deleting the access
     would change behaviour on exactly the runs that reach it.
 
+  BOUNDS-CHECK COALESCING. Along a straight-line run, accesses v[b], v[b+1], v[b+2]
+    over one unwritten base share ONE range gadget (b >= -lo && b < len-hi) instead
+    of three -- sound because RL has no short-circuit, so every access in the run
+    executes unless an earlier trap ends the whole run, and trap-for-trap is the
+    machine's observable contract. See _block for the full argument and the
+    conservative invalidation rules.
+
   DYNAMIC BOUNDS GADGET, SLIMMED. For a computed index the bounds check must run at
     run time. With pooled constants it is four instructions -- GE, LT, AND, and a
     DIV whose divisor is the in-range flag: 1 in range (a harmless division), 0 out of
@@ -102,6 +109,11 @@ class Codegen:
         self._temp_ptr = 0
         self._temp_base = 0
         self._temp_hi = 0
+        #: bounds-check coalescing state: (array, base-name) -> (lo_off, hi_off)
+        #: already PROVEN in range by an emitted gadget, valid only along the current
+        #: straight-line run -- cleared at every control statement, dropped when the
+        #: base name is written. See _block for the soundness argument.
+        self._covered: dict[tuple[str, str], tuple[int, int]] = {}
 
     # ---- memory allocation ----
     def _alloc(self, k: int = 1) -> int:
@@ -169,11 +181,7 @@ class Codegen:
         self._temp_ptr = self._temp_base
         self._temp_hi = self._temp_base
 
-        body_cost = 0
-        for s in self.prog.body:
-            self._reset_temps()
-            c = self._stmt(s, None)
-            body_cost = None if (body_cost is None or c is None) else body_cost + c
+        body_cost = self._block(self.prog.body, None)
         mark = len(self.code)
         for i, e in enumerate(self.prog.outputs):
             self._reset_temps()
@@ -242,6 +250,148 @@ class Codegen:
         validate(program)
         return program
 
+    # ---- bounds-check coalescing --------------------------------------------
+    #
+    # WHY THIS IS SOUND. RL has no short-circuit: within one straight-line run of
+    # simple statements (Let/Assign/StoreElem -- no branches, no loops, no
+    # break/continue between), EVERY array access in the run executes, unless an
+    # earlier trap ends the whole run. So for accesses v[b], v[b+1], v[b+2] whose
+    # index is the SAME unwritten scalar plus constant offsets, one range check
+    #   b >= -lo   AND   b < len - hi        (lo = min offset, hi = max offset)
+    # proves every access in range. If the range check trips where a per-access
+    # check would have tripped LATER, the observable outcome is identical: a Trap.
+    # Trap-for-trap equivalence is the machine's established contract (the trap
+    # carries a reason, never partial state), and the differential fuzzer holds the
+    # compiled program to the interpreter under exactly that contract.
+    #
+    # WHY THE INVALIDATION IS CONSERVATIVE. Coverage lives only along the current
+    # run: any control statement clears it entirely (a branch may skip the access
+    # that widened the range, so pre-emitting for it could trap on a path that
+    # never touches it); writing the base name drops its entries (the checked value
+    # is gone). Offsets are only coalesced when |offset| <= MAX_MEM, so the range
+    # arithmetic cannot wrap; anything else takes the ordinary per-access gadget,
+    # which checks the WRAPPED computed index exactly as the interpreter does.
+
+    @staticmethod
+    def _pattern(e):
+        """(base-name, constant offset) for an index of the shape n / n+k / k+n /
+        n-k, else None. Only these participate in coalescing."""
+        if isinstance(e, nodes.Name):
+            return (e.ident, 0)
+        if isinstance(e, nodes.Binary) and isinstance(e.left, nodes.Name) \
+                and isinstance(e.right, nodes.IntLit):
+            if e.op == "ADD":
+                return (e.left.ident, e.right.value)
+            if e.op == "SUB":
+                return (e.left.ident, -e.right.value)
+        if isinstance(e, nodes.Binary) and e.op == "ADD" \
+                and isinstance(e.left, nodes.IntLit) and isinstance(e.right, nodes.Name):
+            return (e.right.ident, e.left.value)
+        return None
+
+    def _scan_expr(self, e, out: dict) -> None:
+        """Collect coalescable accesses in E into OUT: (array, name) -> (lo, hi)."""
+        if isinstance(e, nodes.Index):
+            pat = self._pattern(e.index)
+            if pat is not None and abs(pat[1]) <= MAX_MEM and e.array in self.array \
+                    and pat[0] in self.scalar:
+                key = (e.array, pat[0])
+                lo, hi = out.get(key, (pat[1], pat[1]))
+                out[key] = (min(lo, pat[1]), max(hi, pat[1]))
+            else:
+                self._scan_expr(e.index, out)
+            return
+        if isinstance(e, nodes.Unary):
+            self._scan_expr(e.operand, out)
+        elif isinstance(e, nodes.Binary):
+            self._scan_expr(e.left, out)
+            self._scan_expr(e.right, out)
+        elif isinstance(e, nodes.Call):
+            for a in e.args:
+                self._scan_expr(a, out)
+
+    def _stmt_groups(self, s) -> dict:
+        out: dict = {}
+        if isinstance(s, (nodes.Let, nodes.Assign)):
+            self._scan_expr(s.expr, out)
+        elif isinstance(s, nodes.StoreElem):
+            self._scan_expr(s.index, out)
+            self._scan_expr(s.value, out)
+        return out
+
+    @staticmethod
+    def _writes_of(s) -> set:
+        return {s.name} if isinstance(s, (nodes.Let, nodes.Assign)) else set()
+
+    def _range_trap(self, base_cell, lo: int, hi: int, length: int) -> None:
+        """Trap unless base+lo >= 0 and base+hi < length, i.e. base in
+        [-lo, length-hi). Four instructions whatever the group size; the same
+        divide-by-flag refusal as the single-access gadget."""
+        t = self._temp()
+        t2 = self._temp()
+        self._emit("GE", t, base_cell, self._cellc(-lo))
+        self._emit("LT", t2, base_cell, self._cellc(length - hi))
+        self._emit("AND", t, t, t2)
+        self._emit("DIV", t, self._cellc(1), t)
+
+    def _emit_groups_for_expr(self, e) -> None:
+        """Range-check the coalescable accesses of a single expression (an if/while
+        condition or for bound) right before it is evaluated."""
+        groups: dict = {}
+        self._scan_expr(e, groups)
+        for (arr_name, base_name), (lo, hi) in groups.items():
+            cov = self._covered.get((arr_name, base_name))
+            if cov is not None and cov[0] <= lo and hi <= cov[1]:
+                continue
+            if cov is not None:
+                lo, hi = min(lo, cov[0]), max(hi, cov[1])
+            _b, length = self.array[arr_name]
+            self._range_trap(self.scalar[base_name], lo, hi, length)
+            self._covered[(arr_name, base_name)] = (lo, hi)
+
+    def _block(self, stmts, loop: "_LoopCtx | None"):
+        """Lower a statement block with coalescing; return its worst-case executed
+        cost (None-absorbing). For each simple statement, groups not yet covered are
+        widened by LOOKING AHEAD through the rest of the run (stopping where the
+        base name is written or the run ends), so one gadget serves the whole
+        lifetime of the base value."""
+        total = 0
+        stmts = list(stmts)
+        for i, s in enumerate(stmts):
+            self._reset_temps()
+            if isinstance(s, (nodes.Let, nodes.Assign, nodes.StoreElem)):
+                mark = len(self.code)
+                for key, (lo, hi) in self._stmt_groups(s).items():
+                    arr_name, base_name = key
+                    cov = self._covered.get(key)
+                    if cov is not None and cov[0] <= lo and hi <= cov[1]:
+                        continue
+                    # widen over the rest of the run while the base survives
+                    for later in stmts[i + 1:]:
+                        if not isinstance(later, (nodes.Let, nodes.Assign, nodes.StoreElem)):
+                            break
+                        for k2, (l2, h2) in self._stmt_groups(later).items():
+                            if k2 == key:
+                                lo, hi = min(lo, l2), max(hi, h2)
+                        if base_name in self._writes_of(later):
+                            break
+                    if cov is not None:
+                        lo, hi = min(lo, cov[0]), max(hi, cov[1])
+                    _base, length = self.array[arr_name]
+                    self._range_trap(self.scalar[base_name], lo, hi, length)
+                    self._covered[key] = (lo, hi)
+                c = self._stmt(s, loop)
+                for name in self._writes_of(s):
+                    for key in [k for k in self._covered if k[1] == name]:
+                        del self._covered[key]
+                c = len(self.code) - mark        # includes the group gadgets
+            else:
+                self._covered.clear()
+                c = self._stmt(s, loop)
+                self._covered.clear()
+            total = None if (total is None or c is None) else total + c
+        return total
+
     # ---- statements ----
     #
     # Each statement returns its WORST-CASE executed instruction count, or None when
@@ -274,24 +424,40 @@ class Codegen:
                     self._trap_now()
                     self._expr(s.value)   # unreachable at run time; keeps cell shapes
             else:
-                idx_cell = self._expr(idx)
-                self._bounds_trap(idx_cell, length)
-                val = self._expr(s.value)
-                addr = self._addr(idx_cell, base)
-                self._emit("STORE", addr, val)
+                pat = self._pattern(idx)
+                cov = self._covered.get((s.array, pat[0])) if pat is not None else None
+                if pat is not None and cov is not None and cov[0] <= pat[1] <= cov[1]:
+                    val = self._expr(s.value)
+                    name_cell = self.scalar[pat[0]]
+                    off = pat[1] + base
+                    if off == 0:
+                        addr = name_cell
+                    else:
+                        addr = self._temp()
+                        self._emit("ADD", addr, name_cell, self._cellc(off))
+                    self._emit("STORE", addr, val)
+                else:
+                    idx_cell = self._expr(idx)
+                    self._bounds_trap(idx_cell, length)
+                    val = self._expr(s.value)
+                    addr = self._addr(idx_cell, base)
+                    self._emit("STORE", addr, val)
             return len(self.code) - mark
         elif isinstance(s, nodes.If):
             mark = len(self.code)
+            self._emit_groups_for_expr(s.cond)
             cond = self._expr(s.cond)
             cond_cost = len(self.code) - mark
+            self._covered.clear()
             else_l = self._label("else")
             end_l = self._label("end")
             self._emit("JMPZ", cond, else_l)
-            then_cost = _csum(self._stmt(st, loop) for st in s.then)
+            then_cost = self._block(s.then, loop)
             self._emit("JMP", end_l)
             self._place(else_l)
-            else_cost = _csum(self._stmt(st, loop) for st in s.els)
+            else_cost = self._block(s.els, loop)
             self._place(end_l)
+            self._covered.clear()
             if then_cost is None or else_cost is None:
                 return None
             # the taken then-branch also executes its trailing JMP
@@ -302,12 +468,15 @@ class Codegen:
             inner = _LoopCtx(brk=end, cont=top)   # continue re-evaluates the condition
             self._place(top)
             self._reset_temps()
+            self._covered.clear()            # the back-edge lands here
+            self._emit_groups_for_expr(s.cond)   # re-checked every iteration, correctly
             cond = self._expr(s.cond)
             self._emit("JMPZ", cond, end)
-            for st in s.body:
-                self._stmt(st, inner)
+            self._covered.clear()
+            self._block(s.body, inner)
             self._emit("JMP", top)
             self._place(end)
+            self._covered.clear()
             return None                      # a while's trip count is not static
         elif isinstance(s, nodes.For):
             mark = len(self.code)
@@ -315,6 +484,8 @@ class Codegen:
             hi = self._for_hi[id(s)]
             # bounds evaluated ONCE, before the first iteration -- hi into its
             # dedicated cell so it survives the per-iteration temp reset
+            self._emit_groups_for_expr(s.lo)     # bounds evaluated once, checked once
+            self._emit_groups_for_expr(s.hi)
             lo_c = self._expr(s.lo, want=var)
             if lo_c != var:
                 self._emit("MOV", var, lo_c)
@@ -328,10 +499,12 @@ class Codegen:
             inner = _LoopCtx(brk=end, cont=incr)  # continue lands ON the increment
             self._place(top)
             self._reset_temps()
+            self._covered.clear()                 # the back-edge lands here
             t = self._temp()
             self._emit("LT", t, var, hi)
             self._emit("JMPZ", t, end)
-            body_cost = _csum(self._stmt(st, inner) for st in s.body)
+            body_cost = self._block(s.body, inner)
+            self._covered.clear()
             self._place(incr)
             self._emit("ADD", var, var, self._cellc(1))
             self._emit("JMP", top)
@@ -377,6 +550,22 @@ class Codegen:
                     return base + e.index.value          # a known cell: zero instructions
                 self._trap_now()                         # statically OOB: still traps here
                 return self._cellc(0)                    # unreachable; a valid operand
+            pat = self._pattern(e.index)
+            if pat is not None:
+                cov = self._covered.get((e.array, pat[0]))
+                if cov is not None and cov[0] <= pat[1] <= cov[1]:
+                    # a coalesced range gadget already proved this access in range;
+                    # the offset and the array base fuse into ONE add (or none)
+                    name_cell = self.scalar[pat[0]]
+                    off = pat[1] + base
+                    if off == 0:
+                        addr = name_cell
+                    else:
+                        addr = self._temp()
+                        self._emit("ADD", addr, name_cell, self._cellc(off))
+                    dst = want if want is not None else self._temp()
+                    self._emit("LOAD", dst, addr)
+                    return dst
             idx_cell = self._expr(e.index)
             self._bounds_trap(idx_cell, length)
             addr = self._addr(idx_cell, base)

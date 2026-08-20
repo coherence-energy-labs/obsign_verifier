@@ -278,7 +278,12 @@ def test_codegen_quality_does_not_rot():
 
     prog = compile_source(CECL_SRC)
     ops = Counter(i[0] for i in prog["code"])
-    assert len(prog["code"]) <= 40, f"CECL compiled to {len(prog['code'])} instructions (was 35)"
+    assert len(prog["code"]) <= 30, f"CECL compiled to {len(prog['code'])} instructions (was 27)"
+    # bounds-check COALESCING: the loop's three accesses v[base], v[base+1], v[base+2]
+    # share ONE range gadget -- exactly one DIV (the trap-by-divide) in the program
+    assert ops["DIV"] == 1, (
+        f"{ops['DIV']} bounds gadgets for a loop whose three accesses share one base "
+        f"-- coalescing regressed")
     # every distinct nonzero constant is loaded exactly once, in the preamble
     assert ops["LOADC"] == len([c for c in prog["consts"]]), (
         f"{ops['LOADC']} LOADCs for {len(prog['consts'])} distinct constants -- "
@@ -296,7 +301,7 @@ def test_codegen_quality_does_not_rot():
     inputs = [4, 18038863, 1932735283, 1250000000, 133143986, 2362232013,
               320000000, 2061584302, 3092376453, 85000000, 3865471, 1717986918, 4800000000]
     _, steps = run_counted(prog, inputs)
-    assert steps <= 130, f"CECL executed {steps} steps for 4 exposures (was 115)"
+    assert steps <= 95, f"CECL executed {steps} steps for 4 exposures (was 83)"
 
 
 def test_folding_preserves_traps():

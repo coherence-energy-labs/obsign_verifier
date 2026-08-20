@@ -154,3 +154,60 @@ def test_multi_output_child_feeds_two_parents_and_two_slices():
     g = verify_graph([child, pa, pb])
     assert g["graph_verified"] is True, g
     assert len(g["roots"]) == 2
+
+
+# ------------------------------------------------------------------ cross-language
+import os
+import shutil
+import subprocess
+import json as _json
+from pathlib import Path as _Path
+
+_HAS_NODE = shutil.which("node") is not None
+_REQUIRED = "node" in {m.strip() for m in os.environ.get("OBSIGN_REQUIRE", "").split(",")}
+_JS_RUNNER = _Path(__file__).resolve().parent / "graph_js_runner.mjs"
+
+
+@pytest.mark.skipif(not _HAS_NODE and not _REQUIRED, reason="node not installed")
+def test_fuzzed_graphs_reach_identical_verdicts_in_python_and_javascript():
+    """The strongest net over the graph rule: fuzzer-generated DAGs -- honest and
+    then corrupted -- must produce the SAME verdict object in both implementations,
+    field for field: graph_verified, complete, the missing set, the roots, and every
+    node's (verified, links_ok) pair, 'incomplete' string included. Receipts cross
+    as canonical text, so integers never round through a double."""
+    cases, py_verdicts = [], {}
+    for seed in range(25):
+        rng = random.Random(seed * 7333 + 5)
+        receipts = _build_random_dag(rng)
+
+        for phase in ("honest", "corrupt"):
+            if phase == "corrupt":
+                _corrupt(rng, receipts)
+            name = f"s{seed}-{phase}"
+            texts = [_json.dumps(r, sort_keys=True, separators=(",", ":")) for r in receipts]
+            cases.append((name, texts))
+            g = verify_graph([_json.loads(t) for t in texts])
+            py_verdicts[name] = {
+                "graph_verified": g["graph_verified"],
+                "complete": g["complete"],
+                "missing": g["missing"],
+                "roots": sorted(g["roots"]),
+                "nodes": {d: {"verified": n["verified"], "links_ok": n["links_ok"]}
+                          for d, n in g["nodes"].items()},
+            }
+
+    tmp = _Path(subprocess.run(["mktemp"], capture_output=True, text=True).stdout.strip())
+    try:
+        tmp.write_text(_json.dumps(cases), encoding="utf-8")
+        proc = subprocess.run(["node", str(_JS_RUNNER), str(tmp)],
+                              capture_output=True, text=True, timeout=300, check=False)
+    finally:
+        tmp.unlink(missing_ok=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    js_verdicts = _json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert set(js_verdicts) == set(py_verdicts)
+    for name in py_verdicts:
+        assert js_verdicts[name] == py_verdicts[name], (
+            f"{name}: JS and Python graph verdicts DIVERGE\n"
+            f"py: {py_verdicts[name]}\njs: {js_verdicts[name]}")
