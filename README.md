@@ -110,8 +110,27 @@ aggregation, and the aggregation is small.
 
 **Replay proves the output follows from the program. It does not prove the program
 computes what its name claims.** A two-instruction program returning a hardcoded
-constant re-derives perfectly, and this tool reports `VERIFIED` — correctly, because it
-did. A test pins that behaviour on purpose so nobody rediscovers it in a meeting.
+constant re-derives perfectly — the re-derivation is honest, and it establishes nothing
+about the inputs the receipt names.
+
+This tool now **refuses** that program rather than reporting `VERIFIED`: it perturbs
+each declared input and, if nothing ever moves the output, reports `input_liveness:
+dead` and fails the verdict. A constant behind an equality guard — one that traps on
+anything but its own receipted inputs — is refused the same way, as `guarded`, because
+a program that declines to run yields no evidence either.
+
+**Do not mistake that for a proof of honesty.** Probing is evidence of dependence, not
+a semantic guarantee, and no finite black-box probe can be more:
+
+```
+if inputs == this_quarter_exact_inputs:  return the number I want
+else:                                    run the real formula
+```
+
+behaves correctly under every perturbation anyone thinks to try. The verdict says so in
+its own notes, and reports which inputs were shown to reach the output and which were
+not. Liveness catches the lazy forgery; only pinning the program answers the real
+question.
 
 The answer is not a weaker verdict, it is to pin the program — which is how model
 validation already works. Read the program once (for the example: 27 instructions),
