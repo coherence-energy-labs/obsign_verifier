@@ -92,6 +92,15 @@ class Parser {
       this.skipWs();
       if (this.s[this.i] !== ':') this.err('expected :');
       this.i++;
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+          // These are not ordinary names in JavaScript: assigning them reparents
+          // or shadows the receiving object. A receipt is data, and a data format
+          // whose meaning depends on the reader's object model is ambiguous by
+          // construction -- so they are refused at the door, in every
+          // implementation, rather than sanitised differently by each one.
+          this.err(`object member ${JSON.stringify(k)} is refused: it names a `
+            + `JavaScript object-model slot, not a data field`);
+        }
       if (out.has(k)) {
         this.err(`duplicate object member ${JSON.stringify(k)}: last-value-wins is a `
           + 'parser convention, not a guarantee, and two readers may disagree about '

@@ -1,0 +1,19 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "id": "003-unpaired-surrogate-escape-splits-the-parsers",
+  "note": "A key written as the escape \\ud800: legal JSON grammar, not legal Unicode. Both JavaScript parsers accept it and agree byte-for-byte on the canonical form {\"\\ud800\":1}. Python refuses -- but by accident and with the wrong error: _check_shape calls len(k.encode(\"utf-8\")) to apply the string-length limit, an unpaired surrogate has no UTF-8 encoding, and the UnicodeEncodeError that escapes is what refuses the receipt. Nothing in the wire format excludes unpaired surrogates, and canonical_bytes handles them fine (ensure_ascii writes them straight back as \\ud800), so today the answer depends on a limit check nobody aimed here. Rust refuses it too, deliberately, so the JavaScript pair are the outliers. Refusing is the right rule -- a receipt is a UTF-8 document and this one has no UTF-8 form -- but it has to be a STATED rule applied everywhere, not a side effect of measuring a length in one implementation.",
+  "observed": {
+    "browser": "load",
+    "npm": "load",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "python=refuse [lone-surrogate]",
+  "text": "{\"\\ud800\":1}"
+}

@@ -52,7 +52,16 @@ const plain = (v) => {
   }
   if (Array.isArray(v)) return v.map(plain);
   if (v && v.__obj instanceof Map) {
-    const o = {};
+    // Object.create(null), NOT {}. On a normal object `o["__proto__"] = x` is a
+    // SETTER, not an assignment: it reparents the object instead of adding a
+    // member. A receipt whose program was {"__proto__": {...a real program...}}
+    // therefore produced an object with ZERO own members that answered .spec,
+    // .code and .steps through the prototype chain -- so this verifier executed
+    // and REPRODUCED a program that Python and Rust cannot even read, and
+    // programSha256 hashed the empty own-property set, giving every such program
+    // the same digest (sha256("{}")) and defeating --expect-program pinning.
+    // A null-prototype object has no such setter and no inherited anything.
+    const o = Object.create(null);
     for (const [k, val] of v.__obj) o[k] = plain(val);
     return o;
   }

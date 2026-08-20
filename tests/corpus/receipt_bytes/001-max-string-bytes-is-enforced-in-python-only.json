@@ -1,0 +1,24 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "id": "001-max-string-bytes-is-enforced-in-python-only",
+  "note": "MAX_STRING_BYTES = 65536 appears in the limits table of BOTH canonical.py and js/src/canonical.js, under a comment in each promising the other carries the same table. Python's _check_shape applies it to every string and every object key. js/src/canonical.js declares the constant on line 52 and never reads it again -- grep the file: MAX_STRING_BYTES has exactly one occurrence. So a receipt whose only sin is a 65537-byte string loads under `npm i obsign-verify` and is refused by `pip install obsign-verify`, which is the class of split the table was written to close. The npm parser is the wrong one, and the vote is not close: the Rust crate, a third reading by another author, refuses it too, and the limit is stated as part of the format by the comments in both JavaScript and Python.",
+  "observed": {
+    "browser": "load",
+    "npm": "load",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "python=refuse [string-bytes]",
+  "text_repeat": {
+    "after": "\"}",
+    "before": "{\"a\":\"",
+    "count": 65537,
+    "unit": "x"
+  }
+}

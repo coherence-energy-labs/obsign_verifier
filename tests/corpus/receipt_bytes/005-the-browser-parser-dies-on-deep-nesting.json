@@ -1,0 +1,25 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "id": "005-the-browser-parser-dies-on-deep-nesting",
+  "note": "20,000 open brackets. parseReceipt recurses with no depth counter, so V8 stops it with `RangeError: Maximum call stack size exceeded` -- an uncaught crash, not a refusal, reachable by pasting a file into the public page. canonical.py catches CPython's RecursionError at exactly this seam and re-raises it as a WireFormatError, with a comment saying why: 'a verifier that crashes on hostile input has failed open in the eyes of whoever handed it the file'. The npm parser stops at depth 33 and never recurses far enough to matter. verify-core.js already learned this lesson once -- 'pasting the literal null took the verify page down' is a comment in the file -- and this is the same bug with a deeper input. Stable from about 8,000 levels up.",
+  "observed": {
+    "browser": "crash",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "browser=crash while both shipped parsers refuse",
+  "text_repeat": {
+    "after": "}",
+    "after_unit": "]",
+    "before": "{\"a\":",
+    "count": 20000,
+    "unit": "["
+  }
+}

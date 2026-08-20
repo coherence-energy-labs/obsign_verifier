@@ -173,7 +173,17 @@ function check(receipt) {
 
     const recomputed = bindsHash(receipt, binds);
     const declared = sig.get('binds_sha256') ?? null;
-    if (recomputed !== (typeof declared === 'string' ? declared : null)) {
+    if (declared !== null && typeof declared !== 'string') {
+      // Coercing a non-string to null let an attacker-supplied value be read as
+      // "absent", which an empty `binds` then reproduced -- turning a malformed
+      // field into a passing identity binding. Malformed is refused, never
+      // normalised: whoever handed you the file chose this value.
+      out.valid = false;
+      out.detail = `signature binds_sha256 is ${typeof declared}, not a string or absent `
+        + '- REFUSED (the bound metadata cannot be reproduced)';
+      return out;
+    }
+    if (recomputed !== declared) {
       out.valid = false;
       out.detail = `signature verifies but its bound metadata [${[...binds].sort().join(', ')}] `
         + 'does NOT reproduce binds_sha256 - the bound block has been changed, removed, '

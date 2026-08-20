@@ -1,0 +1,15 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "id": "002-deep-parentheses-exhaust-the-parser-stack",
+  "kind": "front-end-crash",
+  "note": "Eighty-two open parentheses. _bin walks eight precedence tiers, so each level of nesting costs eight Python frames plus _unary and _primary, against CPython's default recursion limit of 1000. The same limit is reached by 82 nested calls f(f(f(...))), 82 nested index expressions m[m[...]], and 82 parens inside an `arr` length; unary chains (----...) and binary chains (a+a+a+...) reach it at around 980 tokens. canonical.py treats exactly this failure as a defect and converts it -- json.loads' RecursionError becomes a WireFormatError, because 'a verifier that crashes on hostile input has failed open in the eyes of whoever handed it the file'. The compiler front end has no equivalent, and the RL grammar states no nesting limit to refuse against, which is the other half of the finding.",
+  "signature": "RecursionError: maximum recursion depth exceeded",
+  "source_repeat": {
+    "after": ";",
+    "after_unit": ")",
+    "before": "input a; output ",
+    "count": 82,
+    "middle": "a",
+    "unit": "("
+  }
+}

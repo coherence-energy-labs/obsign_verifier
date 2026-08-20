@@ -155,6 +155,17 @@ def validate(prog: Any) -> dict:
     if prog.get("spec") != SPEC:
         raise Trap(f"unknown program spec {prog.get('spec')!r}, expected {SPEC!r}")
 
+    # Object-model member names are refused HERE as well as at the parser. The
+    # parser is the right layer and already refuses them, but a program can reach
+    # this function as an already-parsed structure (tools, tests, a caller with its
+    # own loader), and in JavaScript such a member is not data at all -- it
+    # reparents the object. Refusing at both layers is what makes the three
+    # implementations agree no matter which door the program came through.
+    for member in prog:
+        if member in ("__proto__", "constructor", "prototype"):
+            raise Trap(f"program member {member!r} names a JavaScript object-model "
+                       f"slot, not a data field")
+
     for field in ("mem", "steps", "code", "consts", "input", "output"):
         if field not in prog:
             raise Trap(f"program is missing {field!r}")

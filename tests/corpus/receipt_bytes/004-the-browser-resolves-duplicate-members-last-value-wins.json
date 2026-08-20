@@ -1,0 +1,19 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "id": "004-the-browser-resolves-duplicate-members-last-value-wins",
+  "note": "web/verify/verify-core.js carries NO wire-format limits table at all: no duplicate-member check, no MAX_DEPTH, no MAX_MEMBERS_PER_OBJECT, no MAX_INT_DIGITS, no MAX_STRING_BYTES, no MAX_RECEIPT_BYTES. This vector is the sharpest witness. Python and npm both refuse {\"a\":1,\"a\":2} with a paragraph explaining that last-value-wins is a convention, not a guarantee. The public verify page applies the convention -- `o[k] = value()` overwrites -- canonicalises to {\"a\":2}, and reports an integrity verdict on a document the other two verifiers say does not exist. Written the other way round it is a forgery primitive: the value a human reads first, the value the hash covers second, on the one screen whose job is telling a stranger what to believe. The file's own comments claim the three verifiers 'agree on what even LOADS'.",
+  "observed": {
+    "browser": "load",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "browser=load while both shipped parsers refuse",
+  "text": "{\"a\":1,\"a\":2}"
+}

@@ -1,0 +1,13 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "id": "003-an-over-wide-decimal-literal-crashes-the-lexer",
+  "kind": "front-end-crash",
+  "note": "docs/RL.md says 'All literals fit int64 or fail to compile'. This one fails differently. lex() builds the value with int(text.replace('_',''), base) the moment it sees the digits, and past 4300 decimal digits CPython refuses the conversion itself. The ValueError escapes with no source position, no diagnosis and no membership in the caught set -- while a 4300-digit literal, one shorter, gets the proper 'does not fit in int64' TypeError_ from the typer a pass later. The receipt parser met the identical CPython limit and closed it deliberately with MAX_INT_DIGITS; the compiler front end has no such bound.",
+  "signature": "ValueError in frontend.lex: Exceeds the limit (N digits) for integer string conversion",
+  "source_repeat": {
+    "after": ";",
+    "before": "input a; output ",
+    "count": 4301,
+    "unit": "9"
+  }
+}

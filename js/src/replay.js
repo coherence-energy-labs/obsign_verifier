@@ -186,10 +186,12 @@ function programSha256(prog) {
   const wrapPlain = (v) => {
     if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
     if (typeof v === 'bigint') return { __n: 'i', v };
-    if (typeof v === 'number') {
-      if (!Number.isInteger(v)) return { __n: 'f', v };
-      return { __n: 'i', v: BigInt(v) };
-    }
+    // A Number reaching here is, by plain()'s documented invariant, a JSON FLOAT
+    // (integers arrive as BigInt). Re-typing the whole-valued ones to integer
+    // collapsed `1.0` into `1` -- the exact distinction the canonical form fixes
+    // as load-bearing -- so an honest receipt whose program contained 1.0 got a
+    // digest this implementation alone computed, and was called tampered.
+    if (typeof v === 'number') return { __n: 'f', v };
     if (Array.isArray(v)) return v.map(wrapPlain);
     const m = new Map();
     for (const k of Object.keys(v)) m.set(k, wrapPlain(v[k]));

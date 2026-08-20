@@ -71,18 +71,13 @@ test('the claim hash agrees with the digest Python wrote into the file', () => {
 test('the program digest agrees with the one Python computed', () => {
   const r = readReceipt(ECL);
   const params = r.__obj.get('params').__obj;
-  const plainProgram = JSON.parse(JSON.stringify(
-    (function unwrap(v) {
-      if (v && typeof v === 'object' && '__n' in v) return v.__n === 'i' ? Number(v.v) : v.v;
-      if (Array.isArray(v)) return v.map(unwrap);
-      if (v && v.__obj instanceof Map) {
-        const o = {};
-        for (const [k, val] of v.__obj) o[k] = unwrap(val);
-        return o;
-      }
-      return v;
-    })(params.get('program')),
-  ));
+  // Use the module's own plain(), not a local unwrap. The version that lived here
+  // turned every integer into a JS Number and then round-tripped through JSON,
+  // destroying the int/float distinction -- which is precisely what programSha256
+  // used to compensate for by re-typing whole floats back to integers. Two wrongs
+  // agreeing is not a passing test; it is a test written against a defect.
+  const { plain } = require('../src/verify.js');
+  const plainProgram = plain(params.get('program'));
   assert.strictEqual(replay.programSha256(plainProgram), params.get('program_sha256'));
 });
 
@@ -113,8 +108,6 @@ test('canonicalisation matches Python on the adversarial corpus', () => {
     // DEL (U+007F) must be escaped, like Python ensure_ascii
     ['{"k":"\\u007f"}', '{"k":"\\u007f"}'],
     ['{"\\u007f":1,"a":2}', '{"a":2,"\\u007f":1}'],
-    // __proto__ is an ordinary key, not the prototype accessor
-    ['{"__proto__":424242,"real":1.0}', '{"__proto__":424242,"real":1.0}'],
   ];
   for (const [text, want] of cases) {
     assert.strictEqual(canon(text), want, `canon(${text})`);
@@ -123,6 +116,13 @@ test('canonicalisation matches Python on the adversarial corpus', () => {
 
 test('canonicalisation REFUSES what Python and the browser refuse', () => {
   const refuse = [
+    // Object-model keys. This corpus USED to assert that __proto__ canonicalises
+    // as ordinary data -- true of canon(), which walks the parsed Map, and false of
+    // plain(), which built objects with o[k] = v and so reparented them. The safe
+    // path was tested and its sibling was not. Refused at the door now, in every
+    // implementation, so no reader's object model can change what a receipt means.
+    '{"__proto__":424242,"real":1.0}',
+    '{"a":{"constructor":1}}',
     '{"k":"ab"}',   // raw control char in a string (RFC 8259 forbids)
     '{"m":1e400}',        // overflows to Infinity
     '{"m":NaN}',          // bare non-finite token

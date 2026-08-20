@@ -1,0 +1,19 @@
+{
+  "expected": {
+    "browser": "load",
+    "npm": "load",
+    "python": "load",
+    "rust": "load"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "id": "002-max-depth-is-counted-differently-on-each-side",
+  "note": "33 nested containers whose innermost is empty. js/src/canonical.js increments a counter on ENTERING a container and refuses above 32, so it admits at most 32. canonical.py starts _check_shape at depth 0 on the top-level object and refuses a VALUE deeper than 32, which admits 33 containers whenever the innermost one has no children -- exactly this document. Put a `1` inside the last bracket and both refuse; leave it empty and only JavaScript does. MAX_DEPTH is 32 in both files and means two different things. The Rust crate reads it Python's way and loads this document, so the npm parser is the outlier two to one -- but note which rule is easier to state: JavaScript's is 'at most 32 nested containers', which a reader can check without reading the code. Picking the number is a spec decision; that the shipped parsers already disagree is the defect either way.",
+  "observed": {
+    "browser": "load",
+    "npm": "refuse",
+    "python": "load",
+    "rust": "load"
+  },
+  "signature": "npm=refuse [depth]",
+  "text": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+}

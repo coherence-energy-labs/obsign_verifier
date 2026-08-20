@@ -86,9 +86,22 @@ class WireFormatError(ValueError):
     """The bytes are outside the receipt wire format. Refused before verification."""
 
 
+#: Names that are not ordinary data fields in JavaScript: assigning them reparents
+#: or shadows the receiving object. Python has no such problem, which is exactly why
+#: this list must live here too -- a receipt that loads in one implementation and is
+#: refused by another is the divergence this format spends its whole budget avoiding,
+#: and a JS verifier once REPRODUCED a program carried entirely on a prototype while
+#: this one could not read it at all.
+_OBJECT_MODEL_KEYS = frozenset({"__proto__", "constructor", "prototype"})
+
+
 def _no_duplicate_members(pairs):
     seen = set()
     for k, _ in pairs:
+        if k in _OBJECT_MODEL_KEYS:
+            raise WireFormatError(
+                f"object member {k!r} is refused: it names a JavaScript "
+                f"object-model slot, not a data field")
         if k in seen:
             raise WireFormatError(
                 f"duplicate object member {k!r}: last-value-wins is a parser "

@@ -1,0 +1,8 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "id": "006-the-oracle-accepts-an-array-larger-than-the-machine",
+  "kind": "accept-split",
+  "note": "codegen refuses this with 'program needs 100000001 cells, over the 1048576 limit' -- MAX_MEM from replay.py, '1M cells. A receipt is a document, not a workload.' interp.Interpreter.run does [0] * arr.length with no limit at all, so interpret_source, a public entry point exported in replayc.__all__, accepts the same program and allocates about 800 MB for it. One more zero and it is a MemoryError, which is neither a Trap nor a refusal. Two things are wrong at once: the oracle and the compiler disagree about which programs exist, and the oracle -- which is documented as carrying 'the SAME totality as the machine' -- is missing a bound the machine has.",
+  "signature": "oracle-accepts compiler-refuses: CodegenError: program needs N cells, over the N limit",
+  "source": "input a; arr m[99999999]; output a;"
+}
