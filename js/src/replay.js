@@ -65,7 +65,33 @@ const OPS = {
   HALT: [0, 'halt'],
 };
 
-const isPlainInt = (x) => typeof x === 'number' && Number.isInteger(x);
+// A JSON integer reaches this file as a BigInt -- canonical.js parses it that way and
+// verify.js no longer flattens it to a double -- while a JSON float reaches it as a
+// Number. The two are distinguishable HERE and nowhere upstream, which is what lets
+// `consts: [7.0]` be refused as this file's own header requires. The previous test,
+// `typeof x === 'number' && Number.isInteger(x)`, could not: `Number.isInteger(7.0)`
+// is true, so a float was accepted as an integer, and an exact int64 above 2^53 was
+// rejected as "not fitting in int64" after being silently rounded on the way in.
+//
+// Structural fields (mem, steps, operands, offsets) index JS arrays, so they must end
+// as Numbers. Every one is bounded far below 2^53 by MAX_MEM / MAX_STEPS / MAX_CODE,
+// so narrowing them is lossless -- and that is CHECKED below, not assumed. Values
+// (consts, inputs, memory) stay BigInt and are never narrowed.
+const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+
+/** A structural integer: exact as a JS array index, whether it arrived as either type. */
+const isStructInt = (x) => {
+  if (typeof x === 'bigint') return x >= -SAFE && x <= SAFE;
+  return typeof x === 'number' && Number.isSafeInteger(x);
+};
+
+/** Narrow a structural integer to a Number. Lossless for anything isStructInt accepts. */
+const toNum = (x) => (typeof x === 'bigint' ? Number(x) : x);
+
+/** A value integer. A Number here means the JSON carried a float, which has no int64 form. */
+const isValueInt = (x) => typeof x === 'bigint';
+
+const isPlainInt = isStructInt;
 
 /** Reject anything malformed BEFORE executing a single instruction. */
 function validate(prog) {
@@ -77,26 +103,34 @@ function validate(prog) {
   for (const f of ['mem', 'steps', 'code', 'consts', 'input', 'output']) {
     if (!(f in prog)) throw new Trap(`program is missing ${f}`);
   }
+  // Structural fields are narrowed to Numbers HERE, once, after the range check that
+  // proves the narrowing is lossless. Everything below this line may assume Numbers.
+  if (!isStructInt(prog.mem)) throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
+  if (!isStructInt(prog.steps)) throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
+  prog.mem = toNum(prog.mem);
+  prog.steps = toNum(prog.steps);
   const { mem, steps, consts, code } = prog;
-  if (!isPlainInt(mem) || mem < 1 || mem > MAX_MEM) throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
-  if (!isPlainInt(steps) || steps < 1 || steps > MAX_STEPS) throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
+  if (mem < 1 || mem > MAX_MEM) throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
+  if (steps < 1 || steps > MAX_STEPS) throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
   if (!Array.isArray(consts) || consts.length > MAX_MEM) throw new Trap('consts must be a list');
 
   consts.forEach((c, i) => {
     // A float in the constant pool is how a libm would sneak back in. There is no
     // float anywhere in this machine, so it is rejected rather than coerced.
-    if (typeof c === 'boolean' || !isPlainInt(c)) {
+    if (typeof c === 'boolean' || !isValueInt(c)) {
       throw new Trap(`consts[${i}] is not an integer (floats are not representable)`);
     }
-    const b = BigInt(c);
+    const b = c;
     if (b < INT64_MIN || b > INT64_MAX) throw new Trap(`consts[${i}] does not fit in int64`);
   });
 
   for (const name of ['input', 'output']) {
     const spec = prog[name];
-    if (spec === null || typeof spec !== 'object' || !isPlainInt(spec.offset) || !isPlainInt(spec.length)) {
+    if (spec === null || typeof spec !== 'object' || !isStructInt(spec.offset) || !isStructInt(spec.length)) {
       throw new Trap(`${name} must be {offset:int, length:int}`);
     }
+    spec.offset = toNum(spec.offset);
+    spec.length = toNum(spec.length);
     if (spec.offset < 0 || spec.length < 0 || spec.offset + spec.length > mem) {
       throw new Trap(`${name} window ${spec.offset}..${spec.offset + spec.length} is outside mem (${mem})`);
     }
@@ -117,8 +151,11 @@ function validate(prog) {
     const [arity, kind] = OPS[op];
     const args = ins.slice(1);
     if (args.length !== arity) throw new Trap(`code[${pc}] ${op} takes ${arity} operand(s), got ${args.length}`);
-    for (const a of args) {
-      if (typeof a === 'boolean' || !isPlainInt(a)) throw new Trap(`code[${pc}] ${op} has a non-integer operand`);
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (typeof a === 'boolean' || !isStructInt(a)) throw new Trap(`code[${pc}] ${op} has a non-integer operand`);
+      args[i] = toNum(a);
+      ins[i + 1] = args[i];   // the interpreter indexes `ins` directly
     }
     const inMem = (a) => a >= 0 && a < mem;
 
@@ -151,6 +188,7 @@ function programSha256(prog) {
   const { canonicalString } = require('./canonical.js');
   const wrapPlain = (v) => {
     if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
+    if (typeof v === 'bigint') return { __n: 'i', v };
     if (typeof v === 'number') {
       if (!Number.isInteger(v)) return { __n: 'f', v };
       return { __n: 'i', v: BigInt(v) };
@@ -163,20 +201,31 @@ function programSha256(prog) {
   return createHash('sha256').update(Buffer.from(canonicalString(wrapPlain(prog)), 'utf8')).digest('hex');
 }
 
-/** Execute a validated program. Throws only `Trap`. */
+/** Execute a validated program. Throws only `Trap`. Returns the output window. */
 function run(prog, inputs) {
+  return runCounted(prog, inputs).out;
+}
+
+/** `run`, plus the number of instructions executed (`steps`).
+ *
+ * The count is verifier-internal, NOT part of the cross-implementation contract --
+ * a caller uses it to bound its own work when it re-runs a program many times
+ * (input-liveness probing), since the declared `steps` budget is only an upper
+ * bound. `stepCap`, when given, lowers the budget for THIS call only. The `out`
+ * of an uncapped call is byte-identical to `run`'s. */
+function runCounted(prog, inputs, stepCap) {
   validate(prog);
 
   const mem = new Array(prog.mem).fill(0n);
   const code = prog.code;
-  const budget = prog.steps;
+  const budget = stepCap === undefined ? prog.steps : Math.min(prog.steps, stepCap);
   const consts = prog.consts.map(BigInt);
 
   const { offset: inOff, length: inLen } = prog.input;
   if (inputs.length !== inLen) throw new Trap(`program expects ${inLen} input(s), got ${inputs.length}`);
   inputs.forEach((v, i) => {
-    if (typeof v === 'boolean' || !isPlainInt(v)) throw new Trap(`input[${i}] is not an integer`);
-    const b = BigInt(v);
+    if (typeof v === 'boolean' || !isValueInt(v)) throw new Trap(`input[${i}] is not an integer`);
+    const b = v;
     if (b < INT64_MIN || b > INT64_MAX) throw new Trap(`input[${i}] does not fit in int64`);
     mem[inOff + i] = b;
   });
@@ -243,7 +292,7 @@ function run(prog, inputs) {
   }
 
   const { offset: outOff, length: outLen } = prog.output;
-  return mem.slice(outOff, outOff + outLen);
+  return { out: mem.slice(outOff, outOff + outLen), steps };
 }
 
 /** SHA-256 over the output as little-endian int64, matching `array_sha256`. */
@@ -253,4 +302,5 @@ function outputSha256(values) {
   return createHash('sha256').update(buf).digest('hex');
 }
 
-module.exports = { SPEC, Trap, validate, run, outputSha256, programSha256, wrap, INT64_MIN, INT64_MAX };
+module.exports = { SPEC, Trap, validate, run, runCounted, outputSha256, programSha256,
+  wrap, INT64_MIN, INT64_MAX, MAX_STEPS };

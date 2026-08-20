@@ -65,6 +65,26 @@ all **traps**, and a trap is a refusal with a reason, never an exception that es
 The step budget is a security property, not a nicety: a receipt handed to you by an
 adversary must not be able to hang your verifier.
 
+### Chains — verify a pipeline, leaf to root
+
+One receipt proves one computation. A **receipt graph** proves a pipeline of them: a
+receipt's `params.links` binds slices of its inputs to other receipts' outputs, and
+
+```
+obsign-verify --chain desk_*.json firm_root.json
+```
+
+re-derives every node and checks every link **value-for-value** against a fresh
+re-execution of the child — an auditor holding a firm-level number can unroll it
+through every intermediate calculation down to raw inputs, on their own machine.
+Links name claim hashes, so the graph is immutable the way git history is: cycles are
+unconstructible, and tampering with any receipt doesn't corrupt the chain — it visibly
+**disconnects** it. A missing receipt reports the chain *incomplete*, which is never
+spelled the same as *forged*, in either direction. The rule, its verdicts, and the
+shipped conformance chain (three desk-level ECL receipts feeding a firm-level root)
+are specified in `docs/GRAPHS.md` and enforced identically by the Python and
+JavaScript implementations.
+
 ### A worked example, and what it measures
 
 `examples/ecl_portfolio.py` puts **IFRS 9 / CECL expected credit loss** —

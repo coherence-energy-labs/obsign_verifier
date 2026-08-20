@@ -18,9 +18,11 @@
 const canonical = require('./canonical.js');
 const replay = require('./replay.js');
 const { verify } = require('./verify.js');
+const { verifyGraph } = require('./graph.js');
 
 module.exports = {
   verify,
+  verifyGraph,
   loadReceipt: canonical.loadReceipt,
   claimOf: canonical.claimOf,
   canonicalString: canonical.canonicalString,

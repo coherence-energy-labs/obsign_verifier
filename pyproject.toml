@@ -64,6 +64,7 @@ dev = ["pytest>=7", "cryptography>=41"]
 
 [project.scripts]
 obsign-verify = "obsign_verify.cli:main"
+obsign-replayc = "obsign_verify.replayc.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

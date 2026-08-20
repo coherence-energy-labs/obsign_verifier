@@ -94,6 +94,22 @@ def test_nan_is_refused_rather_than_canonicalised():
         canonical_bytes({"x": float("nan")})
 
 
+@pytest.mark.parametrize("text", [
+    '{"spec":"x","a":1,"env":{"p":1e400}}',   # overflows to Infinity
+    '{"spec":"x","a":1,"env":{"p":NaN}}',
+    '{"spec":"x","a":1,"env":{"p":Infinity}}',
+])
+def test_a_non_finite_float_in_a_non_claim_field_is_refused_at_LOAD(text):
+    """The N-version trap the JS ports must also survive. `env` is excluded from the
+    claim, so a canon-only check would drop it and never see the Infinity -- and
+    ACCEPT the receipt. load_receipt must refuse it at PARSE, so all four
+    implementations agree on what LOADS, not merely on the claim hash. If this ever
+    starts passing (i.e. load_receipt stops raising), the parse guard was removed and
+    the JS verifiers no longer agree with this one."""
+    with pytest.raises(ValueError):
+        load_receipt(text)
+
+
 def test_integrity_fails_on_a_tampered_claim():
     claim = {"kernel": "tau_field_fixed", "params": {"grid": 8}}
     r = dict(claim, receipt_sha256=canonical_sha256(claim))

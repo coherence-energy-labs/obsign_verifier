@@ -49,6 +49,88 @@ def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
     return (not sig["present"]) or sig["valid"]
 
 
+#: Perturbations tried per input when probing liveness. Small, mixed sign and
+#: magnitude, so an input that only matters above some threshold is still caught.
+_LIVENESS_DELTAS = (1, -1, 7, -7, 1000, -1000, 1_000_000)
+
+_I64_MIN = -(1 << 63)
+_I64_MAX = (1 << 63) - 1
+
+
+def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
+    """Does the output actually depend on the declared inputs?
+
+    A receipt proves "re-run this program on these inputs and you get this hash".
+    That is empty if the program ignores the inputs: a two-instruction program that
+    loads a constant and halts re-derives PERFECTLY and is signed and integral, yet
+    establishes nothing about the inputs it names. `--expect-program` does not help
+    -- the constant program has a perfectly good, pinnable digest. The only thing
+    that separates it from a real computation is that perturbing an input moves the
+    answer, and that is checkable here, on the VM already in hand, with no toolchain.
+
+    This is an EXISTENCE PROOF, not a static approximation: find one input whose
+    change moves the output (or changes whether the program traps at all) and the
+    program demonstrably uses its inputs. Returns one of:
+
+        "live"          -- at least one input demonstrably affects the outcome
+        "dead"          -- EVERY input was fully probed and NONE affected it
+        "indeterminate" -- the probe budget ran out before proving either
+
+    The verdict only ever REFUSES on "dead", and "dead" is only returned after every
+    input has been exercised within budget. An honest program is found live on its
+    first live input, so it costs about one extra run; only the attack -- a program
+    that genuinely ignores its inputs -- pays the full sweep, and such a program is
+    cheap by construction (it does no work). "indeterminate" never refuses: a
+    verifier must not reject an honest receipt merely because it was too expensive
+    to fully probe. Fail towards NOT accusing.
+
+    The probe is bounded so it can never be turned into a denial-of-service
+    amplifier: total perturbation work is capped at a small multiple of the base
+    run, plus a floor generous enough to fully sweep any cheap constant program.
+    """
+    n = len(inputs)
+    if n == 0:
+        return "n/a"  # a program with no declared inputs makes no claim about any
+
+    # Cap ONE perturbation run, and cap the TOTAL. A single probe never runs longer
+    # than the base did (plus a small floor for near-instant programs), so a program
+    # that spins near its budget cannot make each probe expensive; and the total is a
+    # small multiple of the base, so the whole liveness pass adds at most a few times
+    # the verification cost it already paid. Both are what stop this being a DoS
+    # amplifier -- a hostile program is handed a bounded probe, not an open one.
+    per_run_cap = min(replaymod.MAX_STEPS, max(base_steps, 100_000))
+    total_budget = max(base_steps * 8, 4_000_000)
+    spent = 0
+
+    for i in range(n):
+        original = inputs[i]
+        for d in _LIVENESS_DELTAS:
+            probed = original + d
+            if probed < _I64_MIN or probed > _I64_MAX:
+                continue  # keep the perturbation a valid int64; an ingest rejection
+                          # is not evidence about the program's use of the value
+            if spent >= total_budget:
+                return "indeterminate"  # never refuse for want of budget
+            trial = list(inputs)
+            trial[i] = probed
+            try:
+                out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
+                spent += used
+                if out != base_out:
+                    return "live"  # the value moved the answer
+            except replaymod.Trap:
+                spent += per_run_cap  # unknown actual cost; charge the cap
+                # The inputs are all valid int64, so a Trap here came from the
+                # program's own guards or arithmetic (a domain guard, a row-count
+                # pin, a divide-by-zero): the value controls whether an output
+                # exists at all, which is dependence. Even a probe that only hit the
+                # per-run cap proves the perturbed run BEHAVES DIFFERENTLY from the
+                # base, which took fewer steps -- still dependence.
+                return "live"
+
+    return "dead"  # every input exercised within budget, none moved the outcome
+
+
 def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     """Re-derive a receipt whose computation travels inside it.
 
@@ -87,7 +169,7 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
                      f"computes {actual_digest[:16]}..")
 
     try:
-        out = replaymod.run(prog, inputs)
+        out, base_steps = replaymod.run_counted(prog, inputs)
     except replaymod.Trap as trap:
         notes.append(f"program refused: {trap}")
         _signature_gate(receipt, result, notes)
@@ -107,10 +189,28 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     if not len_ok:
         notes.append("output length does not match the re-executed result")
 
+    # A re-derivation that does not depend on the inputs proves nothing about them.
+    # Only "dead" -- every declared input exercised and none moved the outcome --
+    # refuses; "indeterminate" (probe budget spent) never does.
+    liveness = _input_liveness(prog, inputs, out, base_steps)
+    result["input_liveness"] = liveness
+    live_ok = liveness != "dead"
+    if liveness == "dead":
+        notes.append(
+            "the output does not depend on ANY declared input: every input was "
+            "perturbed and the result never changed. This program ignores its "
+            "inputs, so re-deriving it proves nothing about them -- a constant "
+            "dressed as a computation. REFUSED.")
+    elif liveness == "indeterminate":
+        notes.append(
+            "input-liveness probe hit its budget before proving dependence either "
+            "way; not treated as a failure (a verifier must not refuse an honest "
+            "receipt for being expensive to probe)")
+
     sig_ok = _signature_gate(receipt, result, notes)
 
     result["verified"] = bool(result["integrity"] and result["reproduced"]
-                              and digest_ok and len_ok and sig_ok)
+                              and digest_ok and len_ok and live_ok and sig_ok)
     return result
 
 
