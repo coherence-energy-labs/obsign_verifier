@@ -145,9 +145,13 @@ function verify(receipt) {
     // Mirror of the Python verifier's rule, so the two agree byte-for-byte on the
     // trivial-constant attack: only "dead" (every declared input perturbed, none
     // moved the outcome) refuses; "indeterminate" never does.
-    const { verdict: liveness, perInput } = inputLiveness(program, inputs, out, baseSteps);
+    const { verdict: liveness, perInput, perCell } = inputLiveness(program, inputs, out, baseSteps);
     result.input_liveness = liveness;
     result.input_liveness_by_input = perInput;
+    // Which output CELLS a perturbation ever moved. A whole-window verdict cannot see
+    // a constant hiding beside a decoy that echoes an input; graph.js refuses a link
+    // whose source slice is entirely dead.
+    result.output_liveness_by_cell = perCell;
     const liveOk = liveness !== 'dead' && liveness !== 'guarded';
     if (liveness === 'dead') {
       notes.push('the output does not depend on ANY declared input: every input was '
@@ -166,11 +170,15 @@ function verify(receipt) {
     }
     if (liveness === 'live') {
       const dark = perInput.map((st, i) => (st === 'live' ? -1 : i)).filter(i => i >= 0);
+      const deadCells = perCell.map((st, c) => (st === 'dead' ? c : -1)).filter(c => c >= 0);
       notes.push('input-liveness is EVIDENCE, not proof: perturbing an input moved the '
         + 'output, which shows dependence but cannot show the program computes the '
         + 'formula its name claims. Pin an approved program digest (--expect-program) '
         + 'for that.' + (dark.length ? ` Inputs ${JSON.stringify(dark)} were not shown `
-        + 'to reach the output.' : ''));
+        + 'to reach the output.' : '')
+        + (deadCells.length ? ` Output cells ${JSON.stringify(deadCells)} never moved `
+        + 'under ANY perturbation - a constant beside a live one still proves nothing '
+        + 'about the constant.' : ''));
     }
 
     // `declared.length` is a JSON integer, so it arrives as a BigInt and `1n === 1`
@@ -179,6 +187,9 @@ function verify(receipt) {
     // a float or a string there is malformed, and malformed is refused, not ignored.
     // (`declared.length === undefined` also covers a receipt that declares no length;
     // that is the only shape allowed to skip the check.)
+    // (The Python reference read this with `in (None, len(out))`, and `in` is `==`:
+    // `True == 1` and `1.0 == 1`, so `"length": true` verified THERE and was refused
+    // here. Both sides now require a JSON integer.)
     const declaredLen = declared.length;
     const lenOk = declaredLen === undefined || declaredLen === null
       ? true
@@ -199,9 +210,64 @@ function verify(receipt) {
   }
 }
 
-// Perturbations tried per input, mirroring the Python verifier exactly so both land
-// on the same "live"/"dead"/"indeterminate" verdict for the same receipt.
-const LIVENESS_DELTAS = [1n, -1n, 7n, -7n, 1000n, -1000n, 1000000n];
+// Perturbations tried per input, mirroring the Python verifier EXACTLY -- both sides
+// must land on the same "live"/"dead"/"guarded"/"indeterminate" verdict for the same
+// receipt, or a coarse-grained honest receipt is refused by one implementation and
+// accepted by the other.
+const LIVENESS_DELTAS = [1n, -1n, 7n, -7n, 1000n, -1000n, 1000000n, -1000000n];
+
+// Scaled to the INPUT: a fixed ladder can only exercise a program at the resolution
+// of its largest step, so anything coarser -- cents reported in hundreds of millions,
+// bytes reported in gigabytes, any bucketed figure -- never moved and was called
+// "dead", which REFUSES. Honest receipts were being accused of being constants.
+const LIVENESS_FRACTIONS = [2n, 8n, 64n, 1024n];
+// ...and scaled to the MACHINE, for the mirror case: a small input multiplied up
+// before it reaches the output.
+const LIVENESS_SHIFTS = [20n, 32n, 48n, 62n];
+const LIVENESS_EDGES = [0n, 1n, -1n];
+
+/** The values one input is re-run with, cheapest and likeliest first. */
+function probeValues(x) {
+  const seen = new Set([x]);
+  const values = [];
+  const add = (v) => {
+    if (v >= replay.INT64_MIN && v <= replay.INT64_MAX && !seen.has(v)) {
+      seen.add(v);
+      values.push(v);
+    }
+  };
+  for (const d of LIVENESS_DELTAS) add(x + d);
+  const magnitude = x < 0n ? -x : x;
+  for (const f of LIVENESS_FRACTIONS) {
+    const step = magnitude / f;
+    if (step !== 0n) { add(x + step); add(x - step); }
+  }
+  for (const k of LIVENESS_SHIFTS) { add(x + (1n << k)); add(x - (1n << k)); }
+  for (const v of LIVENESS_EDGES) add(v);
+  add(replay.INT64_MAX);
+  add(replay.INT64_MIN);
+  return values;
+}
+
+// What one unit of each kind of per-run work costs, in units of "zeroing one memory
+// cell". Identical to the Python reference's table, because the two must exhaust the
+// budget at the same point or they disagree about which receipts verify.
+const COST_CELL = 1, COST_INPUT = 16, COST_CONST = 8, COST_CODE = 128, COST_STEP = 64;
+const LIVENESS_FLOOR = 32000000;
+
+/** What ONE run of PROGRAM costs -- all of it, not just the steps it retires. The
+ * budget used to count steps alone, and a program that HALTs immediately retires one
+ * step per probe while re-allocating `mem` cells, re-validating every instruction and
+ * re-loading every input: a 4,000,000-step budget bought four million full machine
+ * instantiations. Measured before the fix: 14.0 s in Node for a 1.7 KB receipt whose
+ * claim hash was garbage, and hours at the wire limit. */
+function probeCost(program, nInputs, steps) {
+  return steps * COST_STEP
+    + Number(program.mem) * COST_CELL
+    + nInputs * COST_INPUT
+    + program.code.length * COST_CODE
+    + program.consts.length * COST_CONST;
+}
 
 /** What evidence is there that the output depends on the declared inputs?
  *
@@ -221,34 +287,60 @@ const LIVENESS_DELTAS = [1n, -1n, 7n, -7n, 1000n, -1000n, 1000000n];
  * sound negatives. Bounded so it cannot become a DoS amplifier. */
 function inputLiveness(program, inputs, baseOut, baseSteps) {
   const n = inputs.length;
-  if (n === 0) return { verdict: 'n/a', perInput: [] };
+  if (n === 0) {
+    // Nothing to perturb, so nothing is known about the cells either.
+    return { verdict: 'n/a', perInput: [], perCell: baseOut.map(() => 'indeterminate') };
+  }
 
   const sameOut = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   const perRunCap = Math.min(replay.MAX_STEPS, Math.max(baseSteps, 100000));
-  const totalBudget = Math.max(baseSteps * 8, 4000000);
+  const baseCost = probeCost(program, n, baseSteps);
+  const totalBudget = Math.max(baseCost * 8, LIVENESS_FLOOR);
   let spent = 0;
+  let ran = false;
+  const cellMoved = baseOut.map(() => false);
 
+  /** 'moved' | 'same' | 'trap' | null (budget exhausted, nothing run). */
+  const probe = (i, value) => {
+    if (spent >= totalBudget) return null;
+    const trial = inputs.slice();
+    trial[i] = value;
+    let out;
+    try {
+      const r = replay.runCounted(program, trial, perRunCap);
+      out = r.out;
+      spent += probeCost(program, n, r.steps);
+    } catch (e) {
+      if (!(e instanceof replay.Trap)) throw e;
+      // A refused run still cost the fixed per-run work plus what it retired; the
+      // Trap carries the count. Charging the CAP over-bills an early trap enormously
+      // and an over-billed budget reports 'indeterminate', which does not refuse.
+      spent += probeCost(program, n, e.steps || 0);
+      return 'trap';
+    }
+    ran = true;
+    if (sameOut(out, baseOut)) return 'same';
+    for (let c = 0; c < Math.min(out.length, cellMoved.length); c++) {
+      if (out[c] !== baseOut[c]) cellMoved[c] = true;
+    }
+    return 'moved';
+  };
+
+  // pass 1: the per-input verdict, stopping at the first perturbation that moves the
+  // output -- that is all it takes to establish dependence.
+  const ladders = inputs.map((x) => probeValues(x));
+  const tried = new Array(n).fill(0);
   const perInput = [];
   for (let i = 0; i < n; i++) {
-    const original = inputs[i];
     let state = 'dead';
     let trapped = false;
     let exhausted = false;
-    for (const d of LIVENESS_DELTAS) {
-      const probed = original + d;
-      if (probed < replay.INT64_MIN || probed > replay.INT64_MAX) continue;
-      if (spent >= totalBudget) { exhausted = true; break; }
-      const trial = inputs.slice();
-      trial[i] = probed;
-      try {
-        const { out, steps } = replay.runCounted(program, trial, perRunCap);
-        spent += steps;
-        if (!sameOut(out, baseOut)) { state = 'live'; break; }
-      } catch (e) {
-        if (!(e instanceof replay.Trap)) throw e;
-        spent += perRunCap;
-        trapped = true;
-      }
+    for (const probed of ladders[i]) {
+      const outcome = probe(i, probed);
+      if (outcome === null) { exhausted = true; break; }
+      tried[i] += 1;
+      if (outcome === 'trap') trapped = true;
+      else if (outcome === 'moved') { state = 'live'; break; }
     }
     if (state !== 'live') {
       state = exhausted ? 'indeterminate' : (trapped ? 'guarded' : 'dead');
@@ -256,12 +348,24 @@ function inputLiveness(program, inputs, baseOut, baseSteps) {
     perInput.push(state);
   }
 
+  // pass 2: finish the ladder for the CELL answer only. Pass 1's early stop is right
+  // for "does this input matter" and useless for "does this cell move": the
+  // perturbation that proved the input live may have moved a different cell entirely.
+  let swept = true;
+  for (let i = 0; i < n && swept; i++) {
+    for (const probed of ladders[i].slice(tried[i])) {
+      if (probe(i, probed) === null) { swept = false; break; }
+    }
+  }
+  const perCell = cellMoved.map((moved) => (moved ? 'live'
+    : (ran && swept ? 'dead' : 'indeterminate')));
+
   let verdict;
   if (perInput.includes('live')) verdict = 'live';
   else if (perInput.includes('indeterminate')) verdict = 'indeterminate';
   else if (perInput.includes('guarded')) verdict = 'guarded';
   else verdict = 'dead';
-  return { verdict, perInput };
+  return { verdict, perInput, perCell };
 }
 
 

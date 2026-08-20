@@ -323,6 +323,12 @@ class Codegen:
     def _writes_of(s) -> set:
         return {s.name} if isinstance(s, (nodes.Let, nodes.Assign)) else set()
 
+    def _drop_covered(self, name: str) -> None:
+        """Forget every range already proven against scalar NAME: the value the gadget
+        checked has just been overwritten, so the proof no longer applies to it."""
+        for key in [k for k in self._covered if k[1] == name]:
+            del self._covered[key]
+
     def _range_trap(self, base_cell, lo: int, hi: int, length: int) -> None:
         """Trap unless base+lo >= 0 and base+hi < length, i.e. base in
         [-lo, length-hi). Four instructions whatever the group size; the same
@@ -486,12 +492,37 @@ class Codegen:
             # dedicated cell so it survives the per-iteration temp reset
             self._emit_groups_for_expr(s.lo)     # bounds evaluated once, checked once
             self._emit_groups_for_expr(s.hi)
-            lo_c = self._expr(s.lo, want=var)
-            if lo_c != var:
-                self._emit("MOV", var, lo_c)
-            hi_c = self._expr(s.hi, want=hi)
-            if hi_c != hi:
-                self._emit("MOV", hi, hi_c)
+            # BOTH BOUNDS ARE READ BEFORE THE LOOP VARIABLE IS BOUND. The oracle does
+            # `lo = eval(s.lo); hi = eval(s.hi); vars[s.var] = lo` (interp.py), which
+            # is what docs/RL.md means by "bounds are evaluated once, before the first
+            # iteration". Destination-directed emission wrote `lo` STRAIGHT INTO the
+            # variable's cell and only then evaluated `hi`, so a bound that mentions
+            # the loop variable read it already clobbered:
+            #
+            #     let i = 5; for i in 0..i { }     oracle: hi = 5, VM: hi = 0
+            #
+            # and, worse, a coalesced range gadget emitted above proved the PRE-loop
+            # value in range while the LOAD then used the post-`lo` one. A compiler
+            # inside a receipt verifier mints receipts that faithfully reproduce
+            # whatever it emits, so a divergence here is a wrong number with the
+            # toolchain vouching for it. When `hi` cannot see the variable the
+            # destination-directed form is still exact, so the fast path is kept.
+            if _reads_name(s.hi, s.var):
+                lo_c = self._expr(s.lo)          # a temp: `hi` still needs the old var
+                hi_c = self._expr(s.hi, want=hi)
+                if hi_c != hi:
+                    self._emit("MOV", hi, hi_c)
+                if lo_c != var:
+                    self._emit("MOV", var, lo_c)
+                self._drop_covered(s.var)
+            else:
+                lo_c = self._expr(s.lo, want=var)
+                if lo_c != var:
+                    self._emit("MOV", var, lo_c)
+                self._drop_covered(s.var)        # the checked value is gone
+                hi_c = self._expr(s.hi, want=hi)
+                if hi_c != hi:
+                    self._emit("MOV", hi, hi_c)
             init_cost = len(self.code) - mark
             top = self._label("for")
             incr = self._label("forincr")
@@ -659,6 +690,23 @@ def _csum(costs) -> int | None:
             return None
         total += c
     return total
+
+
+def _reads_name(e, name: str) -> bool:
+    """Does expression E read scalar NAME anywhere -- including inside an array
+    index? `Index.array` is an array name, a different namespace, so only the index
+    expression can carry a scalar read."""
+    if isinstance(e, nodes.Name):
+        return e.ident == name
+    if isinstance(e, nodes.Index):
+        return _reads_name(e.index, name)
+    if isinstance(e, nodes.Unary):
+        return _reads_name(e.operand, name)
+    if isinstance(e, nodes.Binary):
+        return _reads_name(e.left, name) or _reads_name(e.right, name)
+    if isinstance(e, nodes.Call):
+        return any(_reads_name(a, name) for a in e.args)
+    return False                      # IntLit, and anything with no operands
 
 
 def _writes_var(stmts, var: str) -> bool:

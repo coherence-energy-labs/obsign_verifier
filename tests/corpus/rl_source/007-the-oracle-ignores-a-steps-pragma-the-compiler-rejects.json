@@ -1,8 +1,0 @@
-{
-  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
-  "id": "007-the-oracle-ignores-a-steps-pragma-the-compiler-rejects",
-  "kind": "accept-split",
-  "note": "#steps above the 50,000,000 ceiling is a CodegenError. The interpreter never reads the pragma -- interpret() takes its budget as a parameter -- so it runs the program without noticing. Milder than 006 because nothing unbounded happens, and recorded anyway because the accept/reject boundary of the language is `compile_source`, not `parse_program`, and the two differ. `obsign-replayc check` refuses a program interpret_source will happily run.",
-  "signature": "oracle-accepts compiler-refuses: CodegenError: #steps N must be in N..N",
-  "source": "#steps 999999999\ninput a; output a;"
-}

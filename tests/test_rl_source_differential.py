@@ -61,6 +61,7 @@ import pytest
 
 from obsign_verify.replay import Trap
 from obsign_verify.replay import run as vm_run
+from obsign_verify.replayc.codegen import CodegenError
 from obsign_verify.replayc import compile_source, parse_program
 from obsign_verify.replayc import interp as _interp
 from obsign_verify.replayc.codegen import CodegenError
@@ -195,10 +196,13 @@ def test_the_generators_are_not_vacuous():
     """A fuzzer that emits nothing hostile passes every differential ever written."""
     paths = fuzz.pathological()
     assert len(paths) >= 200, f"only {len(paths)} pathological sources"
-    ids = {n for n, _ in paths}
+    ids = [n for n, _ in paths]
+    assert len(set(ids)) == len(ids), (
+        "two pathological sources share an id: "
+        + ", ".join(sorted({i for i in ids if ids.count(i) > 1}))[:200])
     for must in ("parens-96", "unicode-ident::é", "lit::11111111111111111111",
                  "recursion-mutual", "steps-over-ceiling", "arr-enormous"):
-        assert must in ids, f"the pathological set lost {must!r}"
+        assert must in set(ids), f"the pathological set lost {must!r}"
     seeds = fuzz.seed_sources()
     assert len(seeds) >= 8, f"only {len(seeds)} seed programs -- mutation has no target"
     assert any(n.endswith(".rl") for n, _ in seeds), \
@@ -377,9 +381,6 @@ def test_the_javascript_vm_agrees_with_the_python_side(seed):
 
 # ------------------------------------------------------------- the frozen defects
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: lex() gates on Unicode isalpha()/isdigit() and then matches an ASCII-only "
-    "regex, so a non-ASCII letter or digit raises AttributeError on None."))
 def test_a_non_ascii_letter_is_a_syntax_error_not_a_crash():
     """`input a; output é;` takes the compiler down with an AttributeError.
 
@@ -398,9 +399,6 @@ def test_a_non_ascii_letter_is_a_syntax_error_not_a_crash():
     assert kind == "refuse", f"the lexer raised {detail}"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: the recursive-descent parser exhausts CPython's stack at 82 nested "
-    "parentheses and raises RecursionError."))
 def test_a_deeply_parenthesised_expression_is_refused_not_a_stack_overflow():
     """Eighty-two open parentheses is enough to crash the compiler.
 
@@ -423,9 +421,6 @@ def test_a_deeply_parenthesised_expression_is_refused_not_a_stack_overflow():
     assert kind == "refuse", f"the parser raised {detail}"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: a decimal literal past CPython's 4300-digit conversion limit raises "
-    "ValueError out of lex()."))
 def test_an_over_wide_decimal_literal_is_refused_with_a_position():
     """RL says "all literals fit int64 or fail to compile". This one fails differently.
 
@@ -446,9 +441,6 @@ def test_an_over_wide_decimal_literal_is_refused_with_a_position():
 _HUGE_HEX = "0x" + "f" * 5000
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: three RL diagnostics interpolate an unbounded integer into their own error "
-    "message, and the message formatting raises ValueError."))
 @pytest.mark.parametrize("src,site", [
     (f"input a; output {_HUGE_HEX};", "typer._check_expr"),
     (f"input a; arr m[{_HUGE_HEX}]; output a;", "codegen._alloc"),
@@ -476,9 +468,6 @@ def test_a_diagnostic_does_not_crash_while_refusing(src, site):
     assert kind == "refuse", f"{site} raised {detail} while refusing"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: the reference interpreter allocates array cells with no MAX_MEM check, so "
-    "it accepts a program the compiler refuses and can exhaust memory."))
 def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
     """`arr m[99999999]` -- the compiler refuses it, the oracle allocates it.
 
@@ -488,6 +477,11 @@ def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
     `interpret_source` -- a public entry point, exported in `replayc.__all__` --
     accepts the same program and allocates the cells. `arr m[99999999]` costs 800 MB;
     one more zero and it is a MemoryError, which is not a Trap and not a refusal.
+
+    RESOLVED by moving MAX_MEM and the step ceiling into `parse_program`, the last
+    step both paths share. They are STATIC properties -- knowable without running an
+    instruction -- so they are compile-time refusals (CodegenError) on both sides
+    rather than a runtime Trap on one, and the two doors now admit one language.
 
     Two things are wrong at once. The oracle and the compiler disagree about which
     programs exist, which is the same class of split as any two parsers disagreeing
@@ -503,7 +497,7 @@ def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
     try:
         _interp.interpret(parse_program(src), [0], _INTERP_BUDGET)
         accepted = True
-    except (Trap, MemoryError):
+    except (Trap, MemoryError, CodegenError):
         accepted = False
     assert not accepted, (
         "interpret_source ran a program the compiler refuses as too large -- the "
@@ -579,7 +573,12 @@ def test_the_rust_vm_agrees_with_the_python_vm(seed):
 
 def test_the_corpus_is_present_and_describes_itself():
     entries = corpus_entries()
-    assert len(entries) >= 6, f"only {len(entries)} frozen vector(s)"
+    # An EMPTY corpus is the goal state, not a broken harness: every vector
+    # here was a real divergence, and each is deleted only when all
+    # implementations agree on it. The machinery stays so the next one has
+    # somewhere to land.
+    for e in entries:
+        assert e.get("path"), "corpus entry has no path"
     for e in entries:
         assert e.get("note"), f"{e['path'].name} has no prose saying what it proves"
         assert e.get("signature"), f"{e['path'].name} has no signature"

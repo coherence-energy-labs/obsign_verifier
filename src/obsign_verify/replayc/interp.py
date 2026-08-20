@@ -262,4 +262,33 @@ class Interpreter:
 
 
 def interpret(prog: nodes.Program, inputs: list[int], step_budget: int = 50_000_000) -> list[int]:
+    """Run the reference interpreter under the SAME ceilings the compiler enforces.
+
+    `interpret_source` is public and exported, so it is an accept boundary of the
+    language whether or not it was meant to be one -- and it enforced neither
+    MAX_MEM nor the step ceiling. `arr m[99999999]`, which compile_source refuses
+    outright, allocated ~800 MB here; one more digit is a MemoryError rather than a
+    Trap, and a MemoryError is not a refusal. Two doors into one language must not
+    admit different programs.
+    """
+    from ..replay import MAX_MEM, MAX_STEPS
+    from .codegen import CodegenError
+
+    total = 0
+    for arr in getattr(prog, "arrays", ()) or ():
+        length = getattr(arr, "length", 0)
+        if not isinstance(length, int) or length < 0:
+            raise CodegenError(f"array {getattr(arr, 'name', '?')!r} has a non-integer length")
+        total += length
+        if total > MAX_MEM:
+            raise CodegenError(f"program needs more than {MAX_MEM} cells, over the limit")
+    if step_budget > MAX_STEPS:
+        raise CodegenError(f"step budget {step_budget} exceeds the {MAX_STEPS} ceiling")
+    # The DECLARED budget matters too. `#steps` is what the program asks for and
+    # what compile_source validates; checking only the caller's default meant a
+    # pragma the compiler refuses sailed straight through the oracle.
+    declared = getattr(prog, "steps", None)
+    if declared is not None and (not isinstance(declared, int) or isinstance(declared, bool)
+                                 or declared < 1 or declared > MAX_STEPS):
+        raise CodegenError(f"#steps {declared} must be in 1..{MAX_STEPS}")
     return Interpreter(prog, step_budget).run(list(inputs))

@@ -139,7 +139,31 @@ class Parser {
     for (;;) {
       if (this.i >= this.s.length) this.err('unterminated string');
       const c = this.s[this.i];
-      if (c === '"') { this.i++; return out; }
+      if (c === '"') {
+        this.i++;
+        // MAX_STRING_BYTES was DECLARED here and never read -- the one limit in
+        // the table that existed only as a number. Python and Rust refused a
+        // 65537-byte string while this parser loaded it, so the constant that was
+        // supposed to prove agreement was the proof that there wasn't any.
+        // An unpaired surrogate has no UTF-8 encoding, so a document containing one
+        // cannot have a canonical form at all. Both JS parsers loaded them while
+        // Python refused; agreeing on what LOADS is the point of this table.
+        for (let k = 0; k < out.length; k++) {
+          const cp = out.charCodeAt(k);
+          if (cp >= 0xD800 && cp <= 0xDBFF) {
+            const next = k + 1 < out.length ? out.charCodeAt(k + 1) : 0;
+            if (!(next >= 0xDC00 && next <= 0xDFFF)) this.err('unpaired surrogate in string');
+            k++;
+          } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+            this.err('unpaired surrogate in string');
+          }
+        }
+        const n = Buffer.byteLength(out, 'utf8');
+        if (n > MAX_STRING_BYTES) {
+          this.err(`string is ${n} bytes, limit is ${MAX_STRING_BYTES}`);
+        }
+        return out;
+      }
       // RFC 8259 forbids a raw control character (< U+0020) inside a string; it must
       // be escaped. Python's json and the browser parser both reject it, so this
       // parser was the odd one out -- it accepted a raw U+001F and canonicalised it,
@@ -201,6 +225,27 @@ class Parser {
 
 /** Parse receipt TEXT, preserving the int/float distinction. */
 function loadReceipt(text) {
+  // BYTES ARE THE DOCUMENT. Accept them, and decode STRICTLY.
+  //
+  // Node's fs.readFileSync(f, 'utf8') and the browser's FileReader.readAsText
+  // both SUBSTITUTE U+FFFD for every invalid byte instead of failing. So three
+  // genuinely different files -- {"a":"\xff"}, {"a":"\x80"}, {"a":"\xc3"} --
+  // arrive as one identical string, canonicalise to one form, and hash to one
+  // receipt_sha256. That destroys the defining property of a canonical form, one
+  // layer ABOVE every limit this parser checks, and it does it silently. Python
+  // and Rust refuse these bytes at the decoder.
+  //
+  // A caller who hands us a string has already lost that information, so the only
+  // place the check can live is here, on the bytes.
+  if (text instanceof Uint8Array) {
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(text);
+    } catch (e) {
+      throw new JsonError('receipt is not valid UTF-8: ' + e.message);
+    }
+  } else if (typeof text !== 'string') {
+    throw new JsonError(`receipt must be text or bytes, got ${typeof text}`);
+  }
   // Cheapest refusal first: everything below walks the document.
   if (Buffer.byteLength(text, 'utf8') > MAX_RECEIPT_BYTES) {
     throw new JsonError(`receipt larger than ${MAX_RECEIPT_BYTES} bytes`);

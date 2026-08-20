@@ -35,7 +35,19 @@ const MAX_MEM = 1 << 20;
 const MAX_STEPS = 50_000_000;
 const MAX_CODE = 1 << 16;
 
-class Trap extends Error {}
+/** A refusal with a reason. `steps` is how many instructions had retired when the
+ * refusal happened -- 0 for a trap raised by `validate`, before execution started.
+ * Verifier-internal, exactly like `runCounted`'s count: a caller re-running a program
+ * many times must charge itself for a REFUSED run too, and the step cap is not what a
+ * trap on instruction three cost. Over-billing is not the safe direction -- it
+ * exhausts the liveness budget, and an exhausted budget reports 'indeterminate',
+ * which does not refuse, in place of the 'guarded' that does. */
+class Trap extends Error {
+  constructor(message, steps = 0) {
+    super(message);
+    this.steps = steps;
+  }
+}
 
 /** Wrap into int64. Forget this and a port disagrees on the first overflow. */
 function wrap(v) {
@@ -236,6 +248,7 @@ function runCounted(prog, inputs, stepCap) {
 
   let pc = 0;
   let steps = 0;
+  try {
   for (;;) {
     if (steps >= budget) throw new Trap(`step budget exhausted after ${budget} steps`);
     steps++;
@@ -293,6 +306,11 @@ function runCounted(prog, inputs, stepCap) {
       else v = a >= b ? 1n : 0n;   // GE -- the table is exhaustive
       mem[ins[1]] = v;
     }
+  }
+  } catch (e) {
+    // A trap that happened DURING execution carries the count out with it.
+    if (e instanceof Trap) e.steps = steps;
+    throw e;
   }
 
   const outOff = Number(prog.output.offset);

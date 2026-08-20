@@ -59,7 +59,10 @@ const out = cases.map(({ id, text, file }) => {
   // 'utf8')` substitutes U+FFFD for any byte sequence that is not valid UTF-8, and a
   // test that pre-decoded the bytes in Python would step over the one seam it is
   // trying to measure.
-  const src = file === undefined ? text : readFileSync(file, 'utf8');
+  // BYTES when a file is given. Reading with 'utf8' SUBSTITUTES U+FFFD for every
+  // invalid byte, so distinct files arrived as one string and shared one claim
+  // hash -- the very defect this runner exists to detect, performed by the runner.
+  const src = file === undefined ? text : readFileSync(file);
   row.npm = column((t) => npm.loadReceipt(t), (v) => npm.canonicalString(v), src);
   if (browser) {
     row.browser = column((t) => browser.parseReceipt(t), (v) => browser.canon(v), src);

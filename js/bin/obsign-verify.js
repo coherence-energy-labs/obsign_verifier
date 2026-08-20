@@ -48,7 +48,7 @@ function main(argv) {
   for (const file of files) {
     let res;
     try {
-      res = verify(loadReceipt(fs.readFileSync(file, 'utf8')));
+      res = verify(loadReceipt(fs.readFileSync(file)));
     } catch (e) {
       res = { integrity: false, reproduced: null, verified: false, notes: [`unreadable: ${e.message}`] };
     }
@@ -57,7 +57,7 @@ function main(argv) {
       // Same pin as the Python CLI, for the same reason.
       let actual = null;
       try {
-        const r = loadReceipt(fs.readFileSync(file, 'utf8'));
+        const r = loadReceipt(fs.readFileSync(file));
         const params = r.__obj.get('params');
         actual = params && params.__obj ? params.__obj.get('program_sha256') : null;
       } catch { /* already reported above */ }

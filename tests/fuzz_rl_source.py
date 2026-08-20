@@ -110,8 +110,17 @@ def seed_sources() -> list[tuple[str, str]]:
 def pathological() -> list[tuple[str, str]]:
     """Sources aimed at a specific structural limit, enumerated rather than sampled."""
     out: list[tuple[str, str]] = []
+    seen: set[str] = set()
 
     def add(name: str, src: str) -> None:
+        # Ids must be UNIQUE. They are truncated for readability, and `1`*4300 and
+        # `1`*4301 truncate to the same twenty characters -- a duplicate id in a
+        # differential harness pairs one implementation's answer about one input with
+        # another's about a different one, which manufactures findings.
+        if name in seen:
+            name = f"{name}#{len(src)}"
+        assert name not in seen, f"duplicate vector id {name!r}"
+        seen.add(name)
         out.append((name, src))
 
     add("honest", "input a; output a;")

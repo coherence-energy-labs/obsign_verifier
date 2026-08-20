@@ -132,8 +132,10 @@ function verifyGraph(receipts) {
     // so the verdict is the conjunction over the documents actually supplied, and one
     // hostile copy cannot hide behind an honest one.
     node.verified = true;
+    let first = true;
     for (const key of [...node.envelopes.keys()].sort()) {
       const res = verify(node.envelopes.get(key));
+      if (first) { node.standalone = res; first = false; }
       if (res.verified !== true) {
         node.verified = false;
         node.notes.push('does not verify standalone: ' + (res.notes || []).slice(0, 2).join('; '));
@@ -224,6 +226,18 @@ function verifyGraph(receipts) {
       if (!equal) {
         node.linksOk = false;
         node.notes.push(`inputs[${d}..${d + L}) do not equal the child's re-derived output[${s}..${s + L}) -- this receipt did NOT consume what ${childDigest.slice(0, 16)}.. produced`);
+        continue;
+      }
+      // THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS. verify()
+      // refuses a node whose whole output ignores every declared input; an output
+      // window is a VECTOR, so `output 424242, a + b;` passes that and then links only
+      // cell 0, carrying a hardcoded constant down a chain that prints CHAIN VERIFIED.
+      // Cells the child's probe could not decide are 'indeterminate' and never refuse.
+      const cells = (nodes.get(childDigest).standalone || {}).output_liveness_by_cell || [];
+      const sliceStates = cells.slice(s, s + L);
+      if (sliceStates.length && sliceStates.every((st) => st === 'dead')) {
+        node.linksOk = false;
+        node.notes.push(`link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. never moved under ANY perturbation of that receipt's inputs: the values this link carries are constants, so the chain proves nothing about them however well every node re-derives`);
       }
     }
   }
@@ -233,23 +247,39 @@ function verifyGraph(receipts) {
   const WHITE = 0, GREY = 1, BLACK = 2;
   const color = new Map([...nodes.keys()].map((d) => [d, WHITE]));
   const order = [];
-  const dfs = (digest) => {
-    color.set(digest, GREY);
-    const rp = nodes.get(digest).receiptPlain;
-    for (const ln of rp ? linksOf(rp) : []) {
-      const child = ln && ln.receipt_sha256;
-      if (nodes.has(child)) {
+  // ITERATIVE, because the depth used to be the length of the chain the SUPPLIER
+  // chose: ~20,000 linked receipts of 200 bytes each threw `RangeError: Maximum call
+  // stack size exceeded` out of a function whose whole contract is that a hostile
+  // graph is REFUSED, not fatal. Visit order, finish order and the cycle rule are
+  // unchanged; only the stack moved from the engine's to ours.
+  const dfs = (start) => {
+    color.set(start, GREY);
+    const stack = [[start, 0]];
+    while (stack.length) {
+      const frame = stack.pop();
+      const digest = frame[0];
+      const i = frame[1];
+      const rp = nodes.get(digest).receiptPlain;
+      const links = rp ? linksOf(rp) : [];
+      if (i >= links.length) {
+        color.set(digest, BLACK);
+        order.push(digest);
+        continue;
+      }
+      stack.push([digest, i + 1]);
+      const ln = links[i];
+      const child = ln && typeof ln.receipt_sha256 === 'string' ? ln.receipt_sha256 : null;
+      if (child !== null && nodes.has(child)) {
         if (color.get(child) === GREY) {
           graphNotes.push(`CYCLE through ${String(child).slice(0, 16)}.. -- refused`);
           nodes.get(digest).linksOk = false;
           nodes.get(child).linksOk = false;
         } else if (color.get(child) === WHITE) {
-          dfs(child);
+          color.set(child, GREY);
+          stack.push([child, 0]);
         }
       }
     }
-    color.set(digest, BLACK);
-    order.push(digest);
   };
   for (const d of nodes.keys()) {
     if (color.get(d) === WHITE) dfs(d);

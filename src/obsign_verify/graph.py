@@ -236,12 +236,65 @@ def verify_graph(receipts: list) -> dict:
                     f"inputs[{d}..{d + ln_len}) do not equal the child's re-derived "
                     f"output[{s}..{s + ln_len}) -- this receipt did NOT consume what "
                     f"{child_digest[:16]}.. produced")
+                continue
+            # THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS.
+            #
+            # verify() refuses a node whose whole output ignores every declared input.
+            # An output window is a VECTOR, so that check is passed by appending one
+            # decoy cell -- `output 424242, a + b;` -- and then linking only cell 0:
+            # every input is live, the node verifies, and a hardcoded constant travels
+            # the chain under "CHAIN VERIFIED - every node re-derived, every link
+            # binds". The same rule, applied to the slice the link actually carries,
+            # closes it. Cells the child's probe could not decide are "indeterminate"
+            # and never refuse, exactly as an indeterminate node verdict does not.
+            cells = (child.get("standalone") or {}).get("output_liveness_by_cell") or []
+            slice_states = cells[s:s + ln_len]
+            if slice_states and all(st == "dead" for st in slice_states):
+                node["links_ok"] = False
+                node["notes"].append(
+                    f"link source output[{s}..{s + ln_len}) of {child_digest[:16]}.. "
+                    f"never moved under ANY perturbation of that receipt's inputs: the "
+                    f"values this link carries are constants, so the chain proves "
+                    f"nothing about them however well every node re-derives")
 
-    def dfs(digest: str) -> None:
-        color[digest] = GREY
-        r = nodes[digest]["receipt"]
-        for ln in _links_of(r) if isinstance(r, dict) else []:
-            child = ln.get("receipt_sha256") if isinstance(ln, dict) else None
+    def _named_child(ln) -> str | None:
+        """The digest a link names, or None if it does not name one.
+
+        `nodes` is a dict, so `child in nodes` needs a HASHABLE child -- and a link is
+        attacker-supplied JSON, where `receipt_sha256` can be an array or an object.
+        One 250-byte receipt carrying `"receipt_sha256": []` raised
+        `TypeError: unhashable type: 'list'` straight out of this function, which
+        promises never to raise. `_well_formed_link` already refuses that shape, but
+        only `check_links` consulted it; the reachability walk read the raw value.
+        """
+        if not isinstance(ln, dict):
+            return None
+        child = ln.get("receipt_sha256")
+        return child if isinstance(child, str) else None
+
+    def dfs(start: str) -> None:
+        """Iterative depth-first walk.
+
+        This was recursive, so its depth was the length of the chain WHOEVER HANDED
+        YOU THE SET chose: about 2,000 linked receipts of 200 bytes each raised
+        RecursionError, and `obsign-verify --chain` turned that into a traceback and
+        an exit code that means "crashed" rather than "refused". rust/src/graph.rs
+        already walks with an explicit stack, and says why: "a stack overflow is a
+        crash rather than a refusal". The visit order, the finish order and the cycle
+        rule are unchanged -- only the stack moved from the interpreter's to ours.
+        """
+        color[start] = GREY
+        stack: list[tuple[str, int]] = [(start, 0)]
+        while stack:
+            digest, i = stack.pop()
+            r = nodes[digest]["receipt"]
+            links = _links_of(r) if isinstance(r, dict) else []
+            if i >= len(links):
+                color[digest] = BLACK
+                order.append(digest)
+                continue
+            stack.append((digest, i + 1))
+            child = _named_child(links[i])
             if child in nodes:
                 if color[child] == GREY:
                     graph_notes.append(f"CYCLE through {child[:16]}.. -- a receipt "
@@ -249,9 +302,8 @@ def verify_graph(receipts: list) -> dict:
                     nodes[digest]["links_ok"] = False
                     nodes[child]["links_ok"] = False
                 elif color[child] == WHITE:
-                    dfs(child)
-        color[digest] = BLACK
-        order.append(digest)
+                    color[child] = GREY
+                    stack.append((child, 0))
 
     for digest in nodes:
         check_links(digest)
@@ -260,9 +312,10 @@ def verify_graph(receipts: list) -> dict:
             dfs(digest)
 
     # ---- roots: nodes nothing supplied links to (for display; not a verdict input)
-    referenced = {ln.get("receipt_sha256")
+    referenced = {child
                   for n in nodes.values() if isinstance(n["receipt"], dict)
-                  for ln in _links_of(n["receipt"]) if isinstance(ln, dict)}
+                  for ln in _links_of(n["receipt"])
+                  if (child := _named_child(ln)) is not None}
     roots = [d for d in nodes if d not in referenced]
 
     complete = not missing

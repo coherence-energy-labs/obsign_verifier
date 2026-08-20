@@ -25,8 +25,12 @@ def _report(path: Path, res: dict, quiet: bool) -> None:
     print(f"      re-derived  {'ok' if res['reproduced'] else 'FAIL'}")
     live = res.get("input_liveness")
     if live and live != "n/a":
+        # "guarded" was missing, so a receipt REFUSED for it printed a bare word with
+        # no FAIL beside it -- the one line a reader scans to see which rung failed.
         shown = {"live": "ok - the output depends on the declared inputs",
                  "dead": "FAIL - the output ignores every declared input",
+                 "guarded": "FAIL - the program trapped on every perturbation, so "
+                            "nothing was shown to reach the output",
                  "indeterminate": "unproven (probe budget reached)"}.get(live, live)
         print(f"      inputs      {shown}")
     sig = res.get("signature") or {}

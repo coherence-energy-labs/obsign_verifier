@@ -555,11 +555,19 @@ fn utf8_len(units: &[u16]) -> Option<usize> {
 /// Walk the parsed document and enforce the structural limits.
 ///
 /// The depth rule is CPython's, exactly: the top-level value is depth 0 and a
-/// container's members are one deeper, so the cap is on how deep a VALUE sits, not on
-/// how many containers were opened. The two are not the same rule -- a container that
-/// is empty has no member to check -- and js/src/canonical.js implements the other
-/// one, which is a measured divergence recorded in rust/README.md.
+/// The cap is on CONTAINERS ENTERED, matching canonical.py and js/src/canonical.js.
+/// Bounding the deepest VALUE is a different rule -- an empty container has no member
+/// to check -- and the three implementations answering differently was a real
+/// loadability split, now closed.
 fn check_shape(v: &Value, depth: usize) -> R<()> {
+    // COUNT CONTAINERS ENTERED, which is what js/src/canonical.js counts and what
+    // canonical.py now counts. Bounding the deepest VALUE instead admitted 33
+    // containers whenever the innermost was empty, so one document loaded here and
+    // was refused there. Which number is a spec choice; three answers was the bug.
+    let depth = match v {
+        Value::Object(_) | Value::Array(_) => depth + 1,
+        _ => depth,
+    };
     if depth > MAX_DEPTH {
         return err(format!("nesting deeper than {MAX_DEPTH}"));
     }
@@ -573,7 +581,7 @@ fn check_shape(v: &Value, depth: usize) -> R<()> {
                     }
                     _ => {}
                 }
-                check_shape(val, depth + 1)?;
+                check_shape(val, depth)?;
             }
         }
         Value::Array(a) => {
@@ -581,7 +589,7 @@ fn check_shape(v: &Value, depth: usize) -> R<()> {
                 return err(format!("array of {} exceeds {MAX_ARRAY_LENGTH}", a.len()));
             }
             for val in a {
-                check_shape(val, depth + 1)?;
+                check_shape(val, depth)?;
             }
         }
         Value::Str(u) => match utf8_len(u) {

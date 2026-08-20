@@ -1,8 +1,0 @@
-{
-  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
-  "id": "001-a-non-ascii-letter-crashes-the-lexer",
-  "kind": "front-end-crash",
-  "note": "lex() decides what kind of token starts at a character with c.isalpha() and c.isdigit(), which are Unicode-aware -- 'e-acute', 'Omega', a CJK ideograph, an Arabic-Indic digit and a superscript two all answer True. It then matches [A-Za-z_][A-Za-z0-9_]* or [0-9][0-9_]*, which are ASCII-only, and calls m.group(0) with no None check. An emoji takes the correct path and gets a clean 'unexpected character' ParseError with a source position; a Greek letter gets AttributeError out of the lexer. The gap is exactly the width of the non-ASCII letters and digits, and nothing in it is one of the five exception types replayc/__main__.py catches, so every one of them is a traceback in the terminal of whoever ran `obsign-replayc check` on a file someone handed them.",
-  "signature": "AttributeError in frontend.lex: X object has no attribute X",
-  "source": "input a; output \u00e9;"
-}

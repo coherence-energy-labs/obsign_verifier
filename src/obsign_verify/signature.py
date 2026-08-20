@@ -30,7 +30,7 @@ refusal is the single most security-relevant line in the package.
 
 from __future__ import annotations
 
-from .canonical import canonical_sha256, integrity
+from .canonical import canonical_sha256, claim_of, integrity
 
 #: Only Ed25519 today. An unknown algorithm is UNVERIFIED, never "fine".
 SUPPORTED_ALGS = ("ed25519",)
@@ -56,6 +56,34 @@ SIG_DOMAIN_V2 = b"obsign/signature/v2\x00"
 #: Not an automatic refusal -- the producer's post-hoc case export legitimately
 #: emits an unbound `case` -- but never silent either.
 OUT_OF_CLAIM_FACT = ("case",)
+
+#: Keys that are STRUCTURAL rather than metadata: they are the hash and the signature
+#: themselves, so "not covered by the signature" is not a fact about them.
+_STRUCTURAL = ("receipt_sha256", "signature")
+
+
+def unattested_keys(receipt: dict, bound=()) -> list:
+    """Every key PRESENT in the receipt that the claim hash does not cover and the
+    signature does not bind. COMPUTED, never enumerated.
+
+    `OUT_OF_CLAIM_FACT` above lists `case` and nothing else, so for the whole life
+    of this package `env` and every `_`-prefixed key rode outside both the claim
+    hash and the signature with no mention at all. They are not obscure corners:
+    the producer stores its VERDICTS in `_`-prefixed keys precisely because they are
+    outside the claim -- `obsign authenticity` writes `_combined_verdict`
+    ("AUTHENTIC PROVENANCE (certain) ...") and `_aigen` there -- so on a genuine,
+    valid, identity-bound signed report, the sentence a reader acts on could be
+    rewritten by anyone with a text editor while this verifier reported nothing.
+
+    The producer computes this set (`signing.unbound_keys`) with a comment naming
+    the same defect: enumerating only `case` meant a new out-of-claim field could be
+    forgotten into invisibility. Two implementations of one rule must agree about
+    what the signature does NOT cover as much as about what it does.
+    """
+    claim = claim_of(receipt)
+    bound = set(bound or ())
+    return sorted(k for k in receipt
+                  if k not in claim and k not in _STRUCTURAL and k not in bound)
 
 
 def _ed25519_ok(public_key_hex: str, signature_hex: str, message: bytes) -> tuple[bool, str]:
@@ -96,7 +124,10 @@ def check(receipt: dict) -> dict:
     """
     out = {"present": False, "valid": False, "identity_bound": False,
            "attributed_signer": None, "claimed_signer": None, "detail": "",
-           "bound_metadata": [], "unbound_metadata": []}
+           "bound_metadata": [], "unbound_metadata": [],
+           # the COMPUTED set (see unattested_keys); `unbound_metadata` remains the
+           # `case`-shaped answer the wire format and the other ports already carry
+           "unattested_metadata": []}
 
     sig = receipt.get("signature")
     if not isinstance(sig, dict):
@@ -175,6 +206,26 @@ def check(receipt: dict) -> dict:
                              "(the bound metadata cannot be reproduced)")
             return out
 
+        # A NAME THAT IS NOT IN THE FILE IS NOT A BOUND KEY.
+        #
+        # `binds_hash` hashes only the keys actually PRESENT -- deliberately, and the
+        # docstring above says why. Combine that with `binds` being outside the
+        # signature and there is a third shape of lie the comparison below cannot
+        # catch: pad the list with names for keys the receipt does not contain. The
+        # hash is unchanged, the recomputation passes, and this function then reports
+        # `bound_metadata: ["case", "examiner"]` for a signature that bound neither
+        # and a receipt that holds neither. A producer never emits such a list, so
+        # the only readings are "the bound block was deleted since signing" and "the
+        # list was padded". Both are refusals; neither is a pass.
+        missing = [k for k in binds if k not in receipt]
+        if missing:
+            out["valid"] = False
+            out["detail"] = (
+                f"signature `binds` names {sorted(missing)}, which this receipt does "
+                f"not contain - the bound block was removed since signing, or the list "
+                f"was padded with keys no signature ever covered. REFUSED")
+            return out
+
         recomputed = binds_hash(receipt, binds)
         if recomputed != sig.get("binds_sha256"):
             out["valid"] = False
@@ -193,11 +244,15 @@ def check(receipt: dict) -> dict:
         # for nothing else that happens to be in the file.
         unbound = [k for k in OUT_OF_CLAIM_FACT if k in receipt and k not in binds]
         out["unbound_metadata"] = unbound
-        if unbound:
+        out["unattested_metadata"] = unattested_keys(receipt, binds)
+        if out["unattested_metadata"]:
             out["detail"] += (
-                f"; WARNING: {', '.join(unbound)} is present but NOT covered by this "
-                f"signature - it is an unattested annotation and must not be printed "
-                f"as if the signature vouched for it")
+                f"; WARNING: {', '.join(out['unattested_metadata'])} "
+                f"{'is' if len(out['unattested_metadata']) == 1 else 'are'} present but "
+                f"NOT covered by this signature - unattested annotation"
+                f"{'' if len(out['unattested_metadata']) == 1 else 's'}, which must not "
+                f"be printed as if the signature vouched for "
+                f"{'it' if len(out['unattested_metadata']) == 1 else 'them'}")
         return out
 
     # Legacy v1: signs the bare receipt hash. Verifies, attributes nothing.
@@ -209,6 +264,7 @@ def check(receipt: dict) -> dict:
     # v1 binds NOTHING outside the claim hash, so every out-of-claim fact in the file
     # is unattested. Saying so explicitly is the same refusal as `attributed_signer`.
     out["unbound_metadata"] = [k for k in OUT_OF_CLAIM_FACT if k in receipt]
+    out["unattested_metadata"] = unattested_keys(receipt)
     out["detail"] = (
         (detail + "; legacy obsign/signature/v1 covers NEITHER the signer NOR the "
                   "case block - the name in this file can be rewritten by anyone "

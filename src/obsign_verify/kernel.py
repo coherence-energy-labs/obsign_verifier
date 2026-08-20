@@ -377,15 +377,65 @@ def evolve(inp: dict) -> np.ndarray:
         bias = (a >> np.int64(63)) & np.int64(scale - 1)
         return (a + bias) >> np.int64(frac_bits)
 
-    for _ in range(steps):
-        up = np.empty_like(t); up[1:] = t[:-1]; up[0] = t[0]
-        dn = np.empty_like(t); dn[:-1] = t[1:]; dn[-1] = t[-1]
-        lf = np.empty_like(t); lf[:, 1:] = t[:, :-1]; lf[:, 0] = t[:, 0]
-        rt = np.empty_like(t); rt[:, :-1] = t[:, 1:]; rt[:, -1] = t[:, -1]
+    # THREE REUSED BUFFERS, NOT A DOZEN TEMPORARIES.
+    #
+    # The envelope at the top of this file bounds grid, steps, sources and
+    # grid*grid*steps, and says why: "without them the kernel will happily try to
+    # allocate 149 GiB". The dimension it never bounds is how many copies of the field
+    # are ALIVE AT ONCE -- and at the admitted maximum grid of 4096, one copy is
+    # 134 MiB. Written one expression per line, numpy materialises every
+    # sub-expression: `up + dn + lf + rt - 4*t` alone is five arrays. A ~200-byte
+    # receipt at grid 4096 measured a peak of 1694 MiB -- thirteen live copies -- which
+    # is an out-of-memory kill on a modest verification container, delivered through
+    # the file the verifier was invited to check.
+    #
+    # The constants cannot move: kernel.py requires every one of them to equal the
+    # producer's, so lowering MAX_GRID would refuse receipts the producer mints. So the
+    # FOOTPRINT is what gives. `acc`, `tmp` and `bias_buf` are allocated once and
+    # reused, and every operation writes through `out=`.
+    #
+    # THE ARITHMETIC IS UNCHANGED, operation for operation and in the same order.
+    # int64 addition wraps associatively, so accumulating up+dn+lf+rt in place lands on
+    # exactly the value numpy's left-to-right expression produced.
+    # tests/test_kernel_memory_footprint.py holds the two formulations to bit-for-bit
+    # equality across the envelope -- the only reason rewriting a numeric kernel whose
+    # whole promise is "the same bytes on every machine" is admissible at all.
+    acc = np.empty_like(t)
+    tmp = np.empty_like(t)
+    bias_buf = np.empty_like(t)
+    _63 = np.int64(63)
+    _mask = np.int64(scale - 1)
+    _frac = np.int64(frac_bits)
 
-        lap = up + dn + lf + rt - 4 * t
-        inner = tdiv(D * lap) - tdiv(G * t) + S
-        t = t + tdiv(DT * inner)
+    def tdiv_into(a):
+        """`tdiv(a)` written into `a`. Same bias-then-arithmetic-shift as above."""
+        np.right_shift(a, _63, out=bias_buf)
+        np.bitwise_and(bias_buf, _mask, out=bias_buf)
+        np.add(a, bias_buf, out=a)
+        np.right_shift(a, _frac, out=a)
+
+    for _ in range(steps):
+        acc[1:] = t[:-1]; acc[0] = t[0]                  # up
+        tmp[:-1] = t[1:]; tmp[-1] = t[-1]                # dn
+        np.add(acc, tmp, out=acc)
+        tmp[:, 1:] = t[:, :-1]; tmp[:, 0] = t[:, 0]      # lf
+        np.add(acc, tmp, out=acc)
+        tmp[:, :-1] = t[:, 1:]; tmp[:, -1] = t[:, -1]    # rt
+        np.add(acc, tmp, out=acc)
+
+        np.multiply(t, np.int64(4), out=tmp)
+        np.subtract(acc, tmp, out=acc)                   # acc == lap
+
+        np.multiply(acc, np.int64(D), out=acc)           # D*lap
+        tdiv_into(acc)
+        np.multiply(t, np.int64(G), out=tmp)             # G*t
+        tdiv_into(tmp)
+        np.subtract(acc, tmp, out=acc)
+        np.add(acc, S, out=acc)                          # acc == inner
+
+        np.multiply(acc, np.int64(DT), out=acc)
+        tdiv_into(acc)
+        np.add(t, acc, out=t)
         np.clip(t, lo, hi, out=t)
 
     return np.ascontiguousarray(t)

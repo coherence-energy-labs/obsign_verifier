@@ -41,20 +41,125 @@ def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
     result["signature"] = sig
     if sig["present"] and not sig["valid"]:
         notes.append(sig["detail"])
-    # An unattested `case` on an otherwise valid signature is not a refusal, but it
-    # must reach the reader: it is the block a court report prints first.
-    for key in sig.get("unbound_metadata") or []:
+    # Unattested out-of-claim data on an otherwise valid signature is not a refusal,
+    # but it must reach the reader. This iterated `unbound_metadata`, which is the
+    # hardcoded `("case",)` list -- so `env` and every `_`-prefixed key produced no
+    # note at all, and the producer stores its printed VERDICT in a `_`-prefixed key
+    # (`_combined_verdict`) exactly because it is outside the claim. The computed set
+    # is the one a reader needs.
+    for key in sig.get("unattested_metadata") or sig.get("unbound_metadata") or []:
         notes.append(f"{key!r} is present but NOT covered by the signature - "
                      f"unattested annotation, not an attested fact")
     return (not sig["present"]) or sig["valid"]
 
 
-#: Perturbations tried per input when probing liveness. Small, mixed sign and
-#: magnitude, so an input that only matters above some threshold is still caught.
-_LIVENESS_DELTAS = (1, -1, 7, -7, 1000, -1000, 1_000_000)
+#: Small absolute perturbations, mixed sign, tried first: an honest program usually
+#: moves on the very first one, so the cheap probes come before the expensive ones.
+_LIVENESS_DELTAS = (1, -1, 7, -7, 1000, -1000, 1_000_000, -1_000_000)
+
+#: Perturbations SCALED TO THE INPUT ITSELF. A fixed ladder can only exercise a
+#: program at the resolution of its largest step, so a computation coarser than that
+#: never moved and was reported "dead" -- an honest receipt refused, and accused of
+#: being "a constant dressed as a computation". Money held in cents and reported in
+#: hundreds of millions, a byte count reported in gigabytes, any bucketed or rounded
+#: figure: all of them ignore a delta of 1,000,000 and all of them are honest.
+_LIVENESS_FRACTIONS = (2, 8, 64, 1024)
+
+#: ...and perturbations scaled to the MACHINE, for the mirror-image case: an input
+#: whose own magnitude is small but which is multiplied up before it reaches the
+#: output, where a relative step is no bigger than the absolute one.
+_LIVENESS_SHIFTS = (20, 32, 48, 62)
+
+#: Replacements rather than deltas: the values a program is likeliest to treat
+#: specially, and the edges of the type.
+_LIVENESS_EDGES = (0, 1, -1)
 
 _I64_MIN = -(1 << 63)
 _I64_MAX = (1 << 63) - 1
+
+
+def _probe_values(x: int) -> list[int]:
+    """The values an input is re-run with, cheapest and likeliest first.
+
+    Absolute deltas alone cannot move a program whose output is coarser than the
+    largest of them; relative deltas alone cannot move a program whose input is zero.
+    Both families are here, plus the type's edges -- deduplicated, and clipped to
+    int64 because an ingest rejection says nothing about the program's use of the
+    value, so an out-of-range perturbation is dropped rather than counted.
+    """
+    seen = {x}
+    values: list[int] = []
+
+    def add(v: int) -> None:
+        if _I64_MIN <= v <= _I64_MAX and v not in seen:
+            seen.add(v)
+            values.append(v)
+
+    for d in _LIVENESS_DELTAS:
+        add(x + d)
+    magnitude = abs(x)
+    for f in _LIVENESS_FRACTIONS:
+        step = magnitude // f
+        if step:
+            add(x + step)
+            add(x - step)
+    for k in _LIVENESS_SHIFTS:
+        add(x + (1 << k))
+        add(x - (1 << k))
+    for v in _LIVENESS_EDGES:
+        add(v)
+    add(_I64_MAX)
+    add(_I64_MIN)
+    return values
+
+
+# What one unit of each kind of per-run work costs, in units of "zeroing one memory
+# cell" -- the cheapest thing a run does, and therefore the natural denominator.
+# These are ORDERS OF MAGNITUDE measured on the reference implementation, not
+# calibrated constants: re-validating an instruction (type checks, table lookup,
+# range checks per operand) is around 150x a cell store, executing one is around 60x,
+# and loading an input (bool check, isinstance, range check, store) around 16x. They
+# are rounded UP to powers of two, because under-charging is what turns a budget into
+# an amplifier and over-charging only costs a hostile receipt some probes.
+_COST_CELL = 1        # one zeroed memory cell
+_COST_INPUT = 16      # one input copied, type-checked and stored
+_COST_CONST = 8       # one constant re-validated
+_COST_CODE = 128      # one instruction re-validated
+_COST_STEP = 64       # one instruction executed
+
+#: The floor, in the same units: the budget a program gets however cheap it is, so a
+#: small constant program with many declared inputs is still swept exhaustively rather
+#: than reported "indeterminate" (which does not refuse). ~30 million cell-equivalents
+#: is well under a second of real work on the reference implementation -- and because
+#: the units track real cost, that stays true whichever dimension a hostile receipt
+#: inflates.
+_LIVENESS_FLOOR = 32_000_000
+
+
+def _probe_cost(prog: dict, n_inputs: int, steps: int) -> int:
+    """What ONE run of PROG costs the verifier -- all of it, not just what it retires.
+
+    The probe budget was denominated in VM steps, and steps are the one thing a probe
+    run need not spend. Before a program executes its first instruction,
+    `run_counted` allocates `mem` cells, re-runs `validate` over every instruction and
+    every constant, and copies and range-checks every declared input. A program that
+    HALTs immediately pays all of that and retires ONE step, so a 4,000,000-STEP
+    budget bought four million full machine instantiations: at the wire limit (2^20
+    declared inputs over a 2^20-cell machine -- a 2.1 MB receipt `load_receipt`
+    accepts) that is over a hundred hours of CPU from one file. It was spent before
+    integrity was ever trusted, so the receipt did not even have to be valid; a
+    1.7 KB one measured 8.0 s in Python and 14.0 s in Node against a 3.2 ms base run.
+
+    Charging the fixed cost is what makes the documented bound real: every probe run
+    costs at least what the base run cost, so "a small multiple of the base run"
+    becomes arithmetic rather than aspiration, in every dimension a receipt can
+    inflate -- memory, code length, constant pool, input count, steps.
+    """
+    return (steps * _COST_STEP
+            + prog["mem"] * _COST_CELL
+            + n_inputs * _COST_INPUT
+            + len(prog["code"]) * _COST_CODE
+            + len(prog["consts"]) * _COST_CONST)
 
 
 def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
@@ -94,7 +199,30 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     program REFUSED TO RUN, which is not information about the output, so it is
     recorded as "guarded" and never as evidence.
 
-    Returns (verdict, per_input) where per_input[i] is one of:
+    A PERTURBATION MUST REACH THE SCALE OF THE THING IT PERTURBS. The ladder was
+    seven fixed absolute deltas, the largest 1,000,000, so any computation coarser
+    than that in its inputs' own units -- cents reported in hundreds of millions,
+    bytes reported in gigabytes, anything bucketed or rounded -- never moved, and was
+    REFUSED as a hardcoded constant. `_probe_values` therefore mixes deltas scaled to
+    the input, deltas scaled to the machine word, and the edges of the type.
+
+    "THE OUTPUT" IS NOT ONE NUMBER. The verdict above is about the output WINDOW, and
+    a window is a vector -- so a program whose reported figure is a hardcoded constant
+    passes it by appending one decoy cell that echoes an input:
+
+        input a, b;  output 424242, a + b;      // cell 0 is the "answer"
+
+    Every input is live (the vector moved), the receipt verifies, and a
+    docs/GRAPHS.md link that consumes `src_offset 0, length 1` carries the CONSTANT
+    down the chain while `obsign-verify --chain` prints "CHAIN VERIFIED - every node
+    re-derived, every link binds". So the sweep also records which output CELLS ever
+    moved, and graph.py refuses a link whose whole source slice is dead. The per-cell
+    answer only exists when the sweep was EXHAUSTIVE -- the per-input pass stops at
+    the first perturbation that moves anything, which proves that input live but says
+    nothing about a cell it did not happen to disturb, so a second pass finishes the
+    ladder (within the same budget) before any cell may be called dead.
+
+    Returns (verdict, per_input, per_cell). per_input[i] is one of:
 
         "live"          -- some perturbation of input i MOVED the output
         "guarded"       -- every perturbation of input i trapped; the program
@@ -104,6 +232,7 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
 
     and the overall verdict is "live" if any input is live, else "indeterminate" if
     any is indeterminate, else "guarded" if any is guarded, else "dead".
+    per_cell[c] is "live", "dead" or "indeterminate" for output cell c.
 
     Only "dead" and "guarded" refuse, and both are sound NEGATIVES: in each case
     the run produced no evidence that any declared input reaches the output.
@@ -113,52 +242,101 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     The probe is bounded so it can never be turned into a denial-of-service
     amplifier: total perturbation work is capped at a small multiple of the base
     run, plus a floor generous enough to fully sweep any cheap constant program.
+    Work is measured by `_probe_cost`, which counts what a run ACTUALLY costs --
+    counting only retired steps let a one-instruction program buy four million
+    machine instantiations for a budget of four million steps.
     """
     n = len(inputs)
     if n == 0:
-        return "n/a", []  # a program with no declared inputs makes no claim about any
+        # A program with no declared inputs makes no claim about any -- and with
+        # nothing to perturb, nothing is known about its cells either.
+        return "n/a", [], ["indeterminate"] * len(base_out)
 
     # Cap ONE perturbation run, and cap the TOTAL. A single probe never runs longer
     # than the base did (plus a small floor for near-instant programs), so a program
     # that spins near its budget cannot make each probe expensive; and the total is a
-    # small multiple of the base, so the whole liveness pass adds at most a few times
-    # the verification cost it already paid. Both are what stop this being a DoS
-    # amplifier -- a hostile program is handed a bounded probe, not an open one.
+    # small multiple of the base COST -- not of the base step count, which a hostile
+    # program sets to one and leaves there. Both are what stop this being a DoS
+    # amplifier: a hostile program is handed a bounded probe, not an open one.
     per_run_cap = min(replaymod.MAX_STEPS, max(base_steps, 100_000))
-    total_budget = max(base_steps * 8, 4_000_000)
-    spent = 0
+    base_cost = _probe_cost(prog, n, base_steps)
+    total_budget = max(base_cost * 8, _LIVENESS_FLOOR)
 
+    cell_moved = [False] * len(base_out)   # which output cells any probe ever moved
+    state = {"spent": 0, "ran": False}     # budget spent; did ANY probe complete
+
+    def probe(i: int, value: int):
+        """Run with input i replaced. Returns "moved" | "same" | "trap" | None (budget
+        exhausted, nothing run). Records which cells moved whatever the answer is."""
+        if state["spent"] >= total_budget:
+            return None
+        trial = list(inputs)
+        trial[i] = value
+        try:
+            out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
+        except replaymod.Trap as trap:
+            # A refused run still cost the fixed per-run work, plus however many
+            # instructions it retired before refusing -- which the Trap carries.
+            # Charging the CAP instead over-bills an early trap enormously, and an
+            # over-billed budget runs out and reports "indeterminate", which does not
+            # refuse, in place of the "guarded" that does.
+            state["spent"] += _probe_cost(prog, n, getattr(trap, "steps", 0))
+            return "trap"
+        state["spent"] += _probe_cost(prog, n, used)
+        state["ran"] = True
+        if out == base_out:
+            return "same"
+        for c in range(min(len(out), len(cell_moved))):
+            if out[c] != base_out[c]:
+                cell_moved[c] = True
+        return "moved"
+
+    # ---- pass 1: the per-input verdict. Stops at the first perturbation that moves
+    # the output, because that is all it takes to establish dependence.
+    ladders = [_probe_values(x) for x in inputs]
+    tried = [0] * n
     per_input: list[str] = []
     for i in range(n):
-        original = inputs[i]
-        state = "dead"          # until a perturbation says otherwise
+        verdict_i = "dead"      # until a perturbation says otherwise
         trapped = False
         exhausted = False
-        for d in _LIVENESS_DELTAS:
-            probed = original + d
-            if probed < _I64_MIN or probed > _I64_MAX:
-                continue  # keep the perturbation a valid int64; an ingest rejection
-                          # is not evidence about the program's use of the value
-            if spent >= total_budget:
+        for probed in ladders[i]:
+            outcome = probe(i, probed)
+            if outcome is None:
                 exhausted = True
                 break
-            trial = list(inputs)
-            trial[i] = probed
-            try:
-                out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
-                spent += used
-                if out != base_out:
-                    state = "live"    # the value moved the answer: real evidence
-                    break
-            except replaymod.Trap:
-                spent += per_run_cap  # unknown actual cost; charge the cap
-                trapped = True        # the program declined to run: NOT evidence
-        if state != "live":
+            tried[i] += 1
+            if outcome == "trap":
+                trapped = True  # the program declined to run: NOT evidence
+            elif outcome == "moved":
+                verdict_i = "live"   # the value moved the answer: real evidence
+                break
+        if verdict_i != "live":
             # An exhausted budget is the weakest thing we can say, so it wins over
             # "guarded"; both are weaker than a definite "dead", which requires
             # every perturbation to have actually RUN and left the output alone.
-            state = "indeterminate" if exhausted else ("guarded" if trapped else "dead")
-        per_input.append(state)
+            verdict_i = ("indeterminate" if exhausted
+                         else ("guarded" if trapped else "dead"))
+        per_input.append(verdict_i)
+
+    # ---- pass 2: finish the ladder, for the CELL answer only. Pass 1's early stop is
+    # right for "does this input matter" and useless for "does this cell move": the
+    # perturbation that proved the input live may have moved a different cell entirely.
+    # A cell may only be called dead once every perturbation has actually been run.
+    swept = True
+    for i in range(n):
+        for probed in ladders[i][tried[i]:]:
+            if probe(i, probed) is None:
+                swept = False
+                break
+        if not swept:
+            break
+
+    if state["ran"] and swept:
+        per_cell = ["live" if moved else "dead" for moved in cell_moved]
+    else:
+        # Nothing completed, or the ladder was cut short: no cell may be called dead.
+        per_cell = ["live" if moved else "indeterminate" for moved in cell_moved]
 
     if "live" in per_input:
         verdict = "live"
@@ -168,7 +346,7 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
         verdict = "guarded"
     else:
         verdict = "dead"
-    return verdict, per_input
+    return verdict, per_input, per_cell
 
 
 def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
@@ -223,9 +401,19 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
                      f"recomputed {got[:16]}..")
 
     # Length rides outside the byte hash, exactly as shape/dtype do for the array
-    # kernel, so it is compared explicitly rather than trusted.
+    # kernel, so it is compared explicitly rather than trusted -- and it must BE a
+    # JSON integer. This read `declared.get("length") in (None, len(out))`, and `in`
+    # is `==`: Python says `True == 1` and `1.0 == 1`, so `"length": true` and
+    # `"length": 1.0` passed HERE over a one-element output while js/src/verify.js
+    # (`typeof declaredLen === 'bigint'`) and rust/src/verify.rs (`v.as_i64()`) both
+    # refused the same bytes. That is the split replay.py's `_struct_int` closed for
+    # the program's structural scalars -- "a forger hands the receipt to whichever
+    # implementation loads it" -- with the reference on the lenient side. A count is
+    # an integer; a boolean is not a count.
     declared = receipt.get("output") or {}
-    len_ok = declared.get("length") in (None, len(out))
+    declared_len = declared.get("length")
+    len_ok = declared_len is None or (
+        type(declared_len) is int and declared_len == len(out))
     if not len_ok:
         notes.append("output length does not match the re-executed result")
 
@@ -233,9 +421,13 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     # "dead" and "guarded" both refuse: in each case NOTHING was observed reaching
     # the output from any declared input. "indeterminate" (probe budget spent) never
     # refuses. A "live" is EVIDENCE, not a semantic guarantee -- see _input_liveness.
-    liveness, per_input = _input_liveness(prog, inputs, out, base_steps)
+    liveness, per_input, per_cell = _input_liveness(prog, inputs, out, base_steps)
     result["input_liveness"] = liveness
     result["input_liveness_by_input"] = per_input
+    # Which output CELLS a perturbation ever moved. A whole-window verdict cannot see
+    # a constant hiding beside a decoy that echoes an input, and graph.py refuses a
+    # link whose source slice is entirely dead. See _input_liveness.
+    result["output_liveness_by_cell"] = per_cell
     live_ok = liveness not in ("dead", "guarded")
     if liveness == "dead":
         notes.append(
@@ -257,12 +449,16 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
             "receipt for being expensive to probe)")
     if liveness == "live":
         dark = [i for i, st in enumerate(per_input) if st != "live"]
+        dead_cells = [c for c, st in enumerate(per_cell) if st == "dead"]
         notes.append(
             "input-liveness is EVIDENCE, not proof: perturbing an input moved the "
             "output, which shows dependence but cannot show the program computes "
             "the formula its name claims. Pin an approved program digest "
             "(--expect-program) for that."
-            + (f" Inputs {dark} were not shown to reach the output." if dark else ""))
+            + (f" Inputs {dark} were not shown to reach the output." if dark else "")
+            + (f" Output cells {dead_cells} never moved under ANY perturbation - a "
+               f"constant beside a live one still proves nothing about the constant."
+               if dead_cells else ""))
 
     sig_ok = _signature_gate(receipt, result, notes)
 

@@ -113,20 +113,61 @@ def _no_duplicate_members(pairs):
     return dict(pairs)
 
 
+def _has_lone_surrogate(text: str) -> bool:
+    """An unpaired surrogate has no UTF-8 encoding at all.
+
+    Python refused these already -- but by ACCIDENT, via the UnicodeEncodeError that
+    escaped from the length check below, which means the refusal moved whenever that
+    check did and carried no explanation. Both JS parsers loaded them. A rule this
+    load-bearing is stated, not inherited from an exception.
+    """
+    prev_high = False
+    for ch in text:
+        cp = ord(ch)
+        if 0xD800 <= cp <= 0xDBFF:
+            if prev_high:
+                return True
+            prev_high = True
+        elif 0xDC00 <= cp <= 0xDFFF:
+            if not prev_high:
+                return True
+            prev_high = False
+        else:
+            if prev_high:
+                return True
+            prev_high = False
+    return prev_high
+
+
 def _check_shape(obj, depth=0):
-    """Walk the parsed document and enforce the structural limits."""
+    """Walk the parsed document and enforce the structural limits.
+
+    `depth` counts CONTAINERS ENTERED, which is npm's and Rust's rule. This used to
+    start the top-level object at 0 and bound the deepest VALUE, so a document
+    whose innermost container was empty carried 33 containers here and 32 there --
+    one document, two answers about whether it loads. Which number is a spec
+    choice; that the three disagreed was the defect.
+    """
+    if isinstance(obj, (dict, list)):
+        depth += 1
     if depth > MAX_DEPTH:
         raise WireFormatError(f"nesting deeper than {MAX_DEPTH}")
+    if isinstance(obj, str) and _has_lone_surrogate(obj):
+        raise WireFormatError(
+            "string contains an unpaired surrogate: it has no UTF-8 encoding, so "
+            "implementations disagree about whether this document exists at all")
     if isinstance(obj, dict):
         for k, v in obj.items():
+            if _has_lone_surrogate(k):
+                raise WireFormatError("object key contains an unpaired surrogate")
             if len(k.encode("utf-8")) > MAX_STRING_BYTES:
                 raise WireFormatError(f"object key longer than {MAX_STRING_BYTES} bytes")
-            _check_shape(v, depth + 1)
+            _check_shape(v, depth)
     elif isinstance(obj, list):
         if len(obj) > MAX_ARRAY_LENGTH:
             raise WireFormatError(f"array of {len(obj)} exceeds {MAX_ARRAY_LENGTH}")
         for v in obj:
-            _check_shape(v, depth + 1)
+            _check_shape(v, depth)
     elif isinstance(obj, str):
         if len(obj.encode("utf-8")) > MAX_STRING_BYTES:
             raise WireFormatError(f"string longer than {MAX_STRING_BYTES} bytes")

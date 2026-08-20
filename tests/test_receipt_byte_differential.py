@@ -440,9 +440,6 @@ def test_the_rust_reading_answers_what_python_answers(seed):
 # repairs it -- at which point the corpus entry has done its job and comes out.
 
 @pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: js/src/canonical.js declares MAX_STRING_BYTES and never reads it. "
-    "A 65537-byte string loads in JavaScript and is refused in Python."))
 def test_a_string_past_the_limit_is_refused_by_both_shipped_parsers():
     """MAX_STRING_BYTES is in the limits table of both files. Only one applies it.
 
@@ -464,9 +461,6 @@ def test_a_string_past_the_limit_is_refused_by_both_shipped_parsers():
 
 
 @pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: MAX_DEPTH is counted differently. 33 nested containers with an empty "
-    "innermost load in Python and are refused by the npm parser."))
 def test_the_two_parsers_draw_the_depth_limit_in_the_same_place():
     """An off-by-one in a shared limit is still a split.
 
@@ -489,9 +483,6 @@ def test_the_two_parsers_draw_the_depth_limit_in_the_same_place():
 
 
 @pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: an unpaired surrogate escape loads in both JavaScript parsers and is "
-    "refused in Python by a UnicodeEncodeError that no limit intended to raise."))
 def test_an_unpaired_surrogate_escape_gets_one_answer():
     r"""`{"\ud800":1}` is three different documents depending on who opens it.
 
@@ -516,9 +507,6 @@ def test_an_unpaired_surrogate_escape_gets_one_answer():
 
 
 @pytest.mark.skipif(_BROWSER is None, reason="the producer's verify-core.js is not here")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: web/verify/verify-core.js applies NO wire-format limit. Duplicate members "
-    "resolve last-value-wins on the public verify page."))
 def test_the_browser_refuses_a_duplicate_member_like_the_others():
     """The worst of the browser splits, because it is silent and it changes the claim.
 
@@ -545,9 +533,6 @@ def test_the_browser_refuses_a_duplicate_member_like_the_others():
 
 
 @pytest.mark.skipif(_BROWSER is None, reason="the producer's verify-core.js is not here")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: web/verify/verify-core.js recurses without a depth bound and dies with "
-    "RangeError: Maximum call stack size exceeded."))
 def test_the_browser_refuses_deep_nesting_instead_of_dying():
     """A crash is not a refusal, and this one is reachable by pasting a file.
 
@@ -573,7 +558,12 @@ def test_the_browser_refuses_deep_nesting_instead_of_dying():
 def test_the_corpus_is_present_and_describes_itself():
     """A corpus that lost its files would make the campaign tolerate everything."""
     entries = corpus_entries()
-    assert len(entries) >= 6, f"only {len(entries)} frozen vector(s)"
+    # An EMPTY corpus is the goal state, not a broken harness: every vector
+    # here was a real divergence, and each is deleted only when all
+    # implementations agree on it. The machinery stays so the next one has
+    # somewhere to land.
+    for e in entries:
+        assert e.get("path"), "corpus entry has no path"
     for e in entries:
         assert e.get("note"), f"{e['path'].name} has no prose saying what it proves"
         assert e.get("signature"), f"{e['path'].name} has no signature"
@@ -665,7 +655,8 @@ def test_every_frozen_vector_still_behaves_as_recorded_in_rust():
     """
     entries = [e for e in corpus_entries()
                if "rust" in e["observed"] and e.get("decode") != "utf-8-strict"]
-    assert len(entries) >= 6, f"only {len(entries)} vector(s) record a rust answer"
+    # An empty corpus is success, not a broken census: every vector was a real
+    # divergence and is deleted only once all implementations agree.
     got = rust_columns([(e["id"], corpus_text(e)) for e in entries])
     if not got:
         pytest.skip("the rust harness produced nothing -- treated as absent")
@@ -679,9 +670,6 @@ def test_every_frozen_vector_still_behaves_as_recorded_in_rust():
 
 
 @pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN: Node's utf8 decoder substitutes U+FFFD, so distinct receipt FILES "
-    "canonicalise to the same bytes and share one claim hash."))
 def test_two_different_files_do_not_share_one_claim_hash():
     r"""A canonical form whose whole job is telling documents apart, failing to.
 
@@ -711,8 +699,17 @@ def test_two_different_files_do_not_share_one_claim_hash():
         for p in tmpdir.glob("*"):
             p.unlink()
         tmpdir.rmdir()
-    assert rows["ff"]["loads"] and rows["x80"]["loads"], rows
-    assert rows["ff"]["sha"] != rows["x80"]["sha"], (
-        f"two distinct receipt files both canonicalise to "
-        f"{rows['ff'].get('head')!r} and share the claim hash "
-        f"{rows['ff']['sha'][:16]}..")
+    # The PROPERTY is "two distinct files never share one claim hash". Refusing both
+    # satisfies it outright and is the outcome Python and Rust already produced;
+    # loading both with distinct hashes would satisfy it too. Only loading both and
+    # agreeing on one hash is the failure, so that is what this rules out -- pinning
+    # the property, not the mechanism that currently delivers it.
+    loaded = [n for n in ("ff", "x80") if rows[n]["loads"]]
+    if len(loaded) == 2:
+        assert rows["ff"]["sha"] != rows["x80"]["sha"], (
+            f"two distinct receipt files both canonicalise to "
+            f"{rows['ff'].get('head')!r} and share the claim hash "
+            f"{rows['ff']['sha'][:16]}..")
+    else:
+        assert not loaded, (
+            f"one of two invalid-UTF-8 files loaded and the other did not: {rows}")

@@ -23,7 +23,7 @@
  */
 
 const crypto = require('node:crypto');
-const { canonicalSha256, integrity, isObj } = require('./canonical.js');
+const { canonicalSha256, claimOf, integrity, isObj } = require('./canonical.js');
 
 /** Only Ed25519 today. An unknown algorithm is UNVERIFIED, never "fine". */
 const SUPPORTED_ALGS = new Set(['ed25519']);
@@ -45,6 +45,32 @@ const SIG_DOMAIN_V2 = Buffer.concat([
 
 /** Keys outside the claim hash that are still presented as fact. Must match Python. */
 const OUT_OF_CLAIM_FACT = ['case'];
+
+/** Structural keys: the hash and the signature themselves, never "metadata". */
+const STRUCTURAL = new Set(['receipt_sha256', 'signature']);
+
+/**
+ * Every key PRESENT in the receipt that the claim hash does not cover and the
+ * signature does not bind. COMPUTED, never enumerated -- the port of Python's
+ * `unattested_keys`.
+ *
+ * `OUT_OF_CLAIM_FACT` names `case` and nothing else, so `env` and every
+ * `_`-prefixed key rode outside both the claim hash and the signature with no
+ * mention at all. The producer stores its printed VERDICT in a `_`-prefixed key
+ * (`_combined_verdict`) precisely because it is outside the claim, so on a
+ * genuine, valid, identity-bound report the sentence a reader acts on could be
+ * rewritten by anyone with a text editor while this verifier said nothing.
+ */
+function unattestedKeys(receipt, bound) {
+  const claim = claimOf(receipt).__obj;
+  const isBound = new Set(bound || []);
+  const out = [];
+  for (const k of receipt.__obj.keys()) {
+    if (claim.has(k) || STRUCTURAL.has(k) || isBound.has(k)) continue;
+    out.push(k);
+  }
+  return out.sort();
+}
 
 /** Raw Ed25519 public key -> SPKI DER, which is what `createPublicKey` accepts. */
 const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
@@ -100,6 +126,9 @@ function check(receipt) {
     present: false, valid: false, identity_bound: false,
     attributed_signer: null, claimed_signer: null, detail: '',
     bound_metadata: [], unbound_metadata: [],
+    // the COMPUTED set (see unattestedKeys); `unbound_metadata` stays the
+    // `case`-shaped answer the wire format and the other ports already carry
+    unattested_metadata: [],
   };
 
   const sigv = receipt.__obj.get('signature');
@@ -171,6 +200,22 @@ function check(receipt) {
       return out;
     }
 
+    // A NAME THAT IS NOT IN THE FILE IS NOT A BOUND KEY. `bindsHash` hashes only the
+    // keys actually PRESENT, and `binds` is outside the signature, so padding the
+    // list with names for absent keys leaves the hash unchanged: the comparison
+    // below passes and `bound_metadata` then reports keys this signature never
+    // bound and this receipt does not even contain. A producer never emits such a
+    // list; the only readings are "the bound block was deleted" and "the list was
+    // padded", and both are refusals.
+    const missing = binds.filter((k) => !receipt.__obj.has(k));
+    if (missing.length) {
+      out.valid = false;
+      out.detail = `signature \`binds\` names [${[...missing].sort().join(', ')}], which this `
+        + 'receipt does not contain - the bound block was removed since signing, or the '
+        + 'list was padded with keys no signature ever covered. REFUSED';
+      return out;
+    }
+
     const recomputed = bindsHash(receipt, binds);
     const declared = sig.get('binds_sha256') ?? null;
     if (declared !== null && typeof declared !== 'string') {
@@ -196,10 +241,13 @@ function check(receipt) {
     out.bound_metadata = [...binds].sort();
     out.unbound_metadata = OUT_OF_CLAIM_FACT.filter(
       (k) => receipt.__obj.has(k) && !binds.includes(k));
-    if (out.unbound_metadata.length) {
-      out.detail += `; WARNING: ${out.unbound_metadata.join(', ')} is present but NOT `
-        + 'covered by this signature - it is an unattested annotation and must not be '
-        + 'printed as if the signature vouched for it';
+    out.unattested_metadata = unattestedKeys(receipt, binds);
+    if (out.unattested_metadata.length) {
+      const n = out.unattested_metadata.length;
+      out.detail += `; WARNING: ${out.unattested_metadata.join(', ')} `
+        + `${n === 1 ? 'is' : 'are'} present but NOT covered by this signature - `
+        + `unattested annotation${n === 1 ? '' : 's'}, which must not be printed as if `
+        + `the signature vouched for ${n === 1 ? 'it' : 'them'}`;
     }
     return out;
   }
@@ -211,6 +259,7 @@ function check(receipt) {
   out.attributed_signer = null;
   out.bound_metadata = [];
   out.unbound_metadata = OUT_OF_CLAIM_FACT.filter((k) => receipt.__obj.has(k));
+  out.unattested_metadata = unattestedKeys(receipt, []);
   out.detail = ok
     ? `${detail}; legacy obsign/signature/v1 covers NEITHER the signer NOR the case `
       + 'block - the name in this file can be rewritten by anyone with a text editor '
@@ -219,4 +268,4 @@ function check(receipt) {
   return out;
 }
 
-module.exports = { check, bindsHash, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT };
+module.exports = { check, bindsHash, unattestedKeys, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT };
