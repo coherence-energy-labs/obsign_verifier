@@ -1,0 +1,18 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "The second of three sites with the same defect as 005: codegen._alloc refused the array -- correctly -- and formatted the length into the refusal, and the formatting is what raised. Each site was independently fixable, so each has its own vector; all three are now stopped upstream in the lexer.",
+  "id": "006-an-over-wide-hex-array-length-is-a-parse-error",
+  "note": "The same literal in an array length, refused the same way.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source_repeat": {
+    "after": "]; output a;",
+    "before": "input a; arr m[0x",
+    "count": 5000,
+    "unit": "f"
+  },
+  "status": "agreed"
+}

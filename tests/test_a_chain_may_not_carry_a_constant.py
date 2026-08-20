@@ -114,8 +114,8 @@ def test_a_cell_is_only_called_dead_after_the_whole_ladder_has_run():
     child = mint.replay_receipt(compile_source(src), [743_215_600_000, 7])
     res = verify(child)
     assert res["output_liveness_by_cell"][0] == "live", (
-        "a coarse-grained cell was called dead because the sweep stopped at the "
-        "first perturbation that moved a different cell", res)
+        f"a coarse-grained cell was called dead because the sweep stopped at the "
+        f"first perturbation that moved a different cell: {res}")
 
 
 def test_the_chain_cli_refuses_and_says_why(tmp_path):
@@ -125,8 +125,9 @@ def test_the_chain_cli_refuses_and_says_why(tmp_path):
         p = tmp_path / f"{name}.json"
         p.write_text(json.dumps(receipt), encoding="utf-8")
         paths.append(str(p))
-    proc = subprocess.run([sys.executable, "-m", "obsign_verify.cli", "--chain", *paths],
-                          capture_output=True, text=True, timeout=600, check=False)
+    argv = [sys.executable, "-m", "obsign_verify.cli", "--chain", *paths]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=600,
+                          check=False)
     assert proc.returncode == 1, proc.stdout
     assert "CHAIN REFUSED" in proc.stdout, proc.stdout
     assert "never moved" in proc.stdout, proc.stdout

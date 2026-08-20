@@ -37,10 +37,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
-
-import sys
 
 from obsign_verify import mint, replay
 from obsign_verify.canonical import canonical_bytes

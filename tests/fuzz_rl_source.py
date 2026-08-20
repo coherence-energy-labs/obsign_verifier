@@ -193,6 +193,11 @@ def pathological() -> list[tuple[str, str]]:
     add("arr-zero", "input a; arr m[0]; output a;")
     add("arr-negative", "input a; arr m[0-1]; output a;")
     add("arr-enormous", "input a; arr m[99999999]; output a;")
+    # The memory limit from BOTH sides plus the two lengths in between, where a guard
+    # that bounds the declared length rather than the total cell count still lets the
+    # oracle and the compiler admit different languages.
+    for n in (1_048_574, 1_048_575, 1_048_576, 1_048_577):
+        add(f"arr-at-max-mem-{n}", f"input a; arr m[{n}]; output a;")
     add("arr-many", "input a; " + "".join(f"arr m{i}[8]; " for i in range(600)) + "output a;")
     add("steps-zero", "#steps 0\ninput a; output a;")
     add("steps-negative", "#steps -1\ninput a; output a;")

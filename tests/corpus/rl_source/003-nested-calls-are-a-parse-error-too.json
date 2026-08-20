@@ -1,0 +1,20 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "Found as the same CRASH as 002, via calls rather than parentheses.",
+  "id": "003-nested-calls-are-a-parse-error-too",
+  "note": "The same bound reached through a different production. Kept separate from 002 because a fix that counted depth in one production only would leave this open, and 82 nested index expressions m[m[...]] and 82 parens inside an `arr` length were two more doors into the same room.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source_repeat": {
+    "after": ";",
+    "after_unit": ")",
+    "before": "fn f(x) { return x + 1; } input a; output ",
+    "count": 82,
+    "middle": "a",
+    "unit": "f("
+  },
+  "status": "agreed"
+}

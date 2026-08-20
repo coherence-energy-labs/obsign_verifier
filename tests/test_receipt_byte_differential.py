@@ -1,4 +1,4 @@
-"""Three parsers, one question: are these bytes a receipt?
+"""Four parsers, one question: are these bytes a receipt?
 
 Every implementation in this estate agrees about arithmetic. The defects that have
 actually cost something were disagreements about DOCUMENTS -- `1e400`, the 5000-digit
@@ -29,25 +29,37 @@ Two properties are asserted of every generated document:
   CANONICAL BYTES. For a document they all load, the canonical string must be
   byte-identical, because those bytes are hashed and that hash is the claim.
 
-WHAT THE CAMPAIGN FOUND, AND WHY THE SUITE IS STILL GREEN
+WHAT THE CAMPAIGN FOUND, AND WHERE IT STANDS
 
-The campaign found six live divergences, over nine frozen files under
-`corpus/receipt_bytes/`:
+Six live divergences, every one of them a place where JavaScript read bytes the other
+implementations did not:
 
-    MAX_STRING_BYTES enforced in Python and nowhere in JavaScript
-    MAX_DEPTH counted one way in Python and another in the npm parser
-    an unpaired surrogate escape refused by Python alone, and by accident
-    a browser parser with no wire-format limits table at all
-    a browser parser that dies of stack exhaustion instead of refusing
-    a JavaScript decoder that repairs invalid UTF-8, collapsing distinct files
-    onto one claim hash
+    MAX_STRING_BYTES enforced in Python and nowhere in JavaScript -- declared in
+      js/src/canonical.js and never read
+    MAX_DEPTH counted one way in Python and another in the npm parser, an off-by-one
+      visible only when the innermost container is empty
+    an unpaired surrogate escape refused by Python alone, and by accident: a
+      UnicodeEncodeError out of a length check, not a rule anybody had written
+    a verify page with no wire-format limits table at all -- duplicate members resolved
+      last-value-wins, no depth, member, digit, string or size bound
+    a verify page that died of stack exhaustion instead of refusing
+    a JavaScript decoder that repaired invalid UTF-8, collapsing distinct FILES onto
+      one claim hash
 
-Each is frozen as a file, pinned below by a test marked `xfail(strict=True)`, and
-tolerated by the campaign ONLY through the signature its corpus file records. Three
-consequences follow, and all three are wanted: the defect is documented with a
-reproducer; the suite is green so it is still worth running; and the moment someone
-fixes one of them the strict xfail turns into a failure that says "this is fixed,
-delete the corpus entry" -- which is how a known defect stops being known.
+Rust settled the two that were Python-against-JavaScript: a third reading by another
+author agreed with Python on both, which is what turns "two implementations differ"
+into "one implementation is the outlier".
+
+All but the last are closed. `corpus/receipt_bytes/` keeps them closed with nine
+vectors, each carrying the bytes, the answer every implementation must now give, and
+the prose of the divergence it came from. A vector is marked `agreed` when it settles
+and is NOT deleted: the bytes are the cheapest possible regression test, and the
+history is the only artifact that says why the limit sits where it sits.
+
+The last one is marked `open` in two vectors and pinned by the one `xfail(strict=True)`
+left here. The npm CLI now refuses invalid UTF-8; the verify page still substitutes
+U+FFFD, so three different files still share one `receipt_sha256` on the page a
+stranger is told to use.
 
 A divergence the corpus does NOT name fails the campaign outright. That is the whole
 point of routing tolerance through the corpus rather than through a list in the test.
@@ -288,7 +300,12 @@ def corpus_text(entry: dict) -> str:
     return entry["text"]
 
 
-_KNOWN = {e["signature"] for e in corpus_entries()}
+#: Divergence signatures the campaign tolerates -- from vectors still marked OPEN, and
+#: only those. A settled vector keeps its historical signature so the record stays
+#: readable, and it must NOT keep granting tolerance: if the MAX_STRING_BYTES split
+#: came back tomorrow, a `_KNOWN` built from every entry would wave it through in
+#: silence, and the corpus would have turned from a ratchet into a permission slip.
+_KNOWN = {e["signature"] for e in corpus_entries() if e.get("status") == "open"}
 
 
 # ----------------------------------------------------------------------- the fuzzers
@@ -556,23 +573,34 @@ def test_the_browser_refuses_deep_nesting_instead_of_dying():
 # ------------------------------------------------------------------- the corpus itself
 
 def test_the_corpus_is_present_and_describes_itself():
-    """A corpus that lost its files would make the campaign tolerate everything."""
+    """A corpus that lost its files would make the campaign tolerate everything.
+
+    A vector is not deleted when its divergence closes; it is marked `agreed`. The
+    bytes that once loaded in one implementation and not another are the cheapest
+    possible test that they now get one answer, and the `history` field is the only
+    artifact that says WHY the limit sits where it sits. Deleting a settled vector
+    throws away the reason and keeps only the number.
+    """
     entries = corpus_entries()
-    # An EMPTY corpus is the goal state, not a broken harness: every vector
-    # here was a real divergence, and each is deleted only when all
-    # implementations agree on it. The machinery stays so the next one has
-    # somewhere to land.
-    for e in entries:
-        assert e.get("path"), "corpus entry has no path"
+    assert len(entries) >= 8, f"only {len(entries)} frozen vector(s)"
     for e in entries:
         assert e.get("note"), f"{e['path'].name} has no prose saying what it proves"
+        assert e.get("history"), f"{e['path'].name} does not say what it came from"
         assert e.get("signature"), f"{e['path'].name} has no signature"
+        assert e.get("status") in ("agreed", "open"), e["path"].name
         assert e.get("observed") and e.get("expected"), e["path"].name
         assert set(e["observed"]) == set(e["expected"]), (
             f"{e['path'].name}: observed and expected name different implementations")
-        assert e["observed"] != e["expected"], (
-            f"{e['path'].name} records agreement -- it is not a divergence")
         assert "text" in e or "bytes_base64" in e or "text_repeat" in e, e["path"].name
+        if e["status"] == "agreed":
+            assert e["observed"] == e["expected"], (
+                f"{e['path'].name} is marked agreed but records a divergence")
+        else:
+            assert e["observed"] != e["expected"], (
+                f"{e['path'].name} is marked open but records agreement")
+    assert sum(1 for e in entries if e["status"] == "agreed") >= 6, (
+        "almost nothing in this corpus is settled -- either a parser regressed or the "
+        "schema drifted")
 
 
 @pytest.mark.parametrize("entry", corpus_entries(),
@@ -713,3 +741,42 @@ def test_two_different_files_do_not_share_one_claim_hash():
     else:
         assert not loaded, (
             f"one of two invalid-UTF-8 files loaded and the other did not: {rows}")
+
+
+@pytest.mark.skipif(_BROWSER is None, reason="the producer's verify-core.js is not here")
+@pytest.mark.xfail(strict=True, reason=(
+    "OPEN: the verify page still decodes invalid UTF-8 leniently, so two distinct "
+    "receipt files canonicalise to the same bytes and share one claim hash."))
+def test_two_different_files_do_not_share_one_claim_hash_in_the_browser():
+    r"""The same property, on the parser a stranger actually reaches.
+
+    The npm CLI now refuses these bytes outright ("receipt is not valid UTF-8"), and
+    Python and Rust never open the files at all. `web/verify/verify-core.js` still
+    receives them through a lenient decoder, so `{"a":"\xff"}` and `{"a":"\x80"}` --
+    and `{"a":"\xc3"}`, a third file -- all become one string, one canonical form and
+    one `receipt_sha256`.
+
+    That is the exact property canonical.py names when it explains `allow_nan=False`:
+    permitting NaN "would let two different receipts share a canonical form". A
+    canonical form that cannot tell two files apart is not doing the one job it has,
+    and this happens before any wire-format limit on the page is consulted.
+    `TextDecoder` takes `{fatal: true}`.
+    """
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        cases = []
+        for name, raw in (("ff", b'{"a":"\xff"}'), ("x80", b'{"a":"\x80"}')):
+            q = tmpdir / f"{name}.bin"
+            q.write_bytes(raw)
+            cases.append((name, str(q)))
+        rows = {r["id"]: r["browser"] for r in node_columns(cases, as_files=True)}
+    finally:
+        for q in tmpdir.glob("*"):
+            q.unlink()
+        tmpdir.rmdir()
+    loaded = [n for n in ("ff", "x80") if rows[n]["loads"]]
+    if len(loaded) == 2:
+        assert rows["ff"]["sha"] != rows["x80"]["sha"], (
+            f"two distinct receipt files both canonicalise to "
+            f"{rows['ff'].get('head')!r} on the verify page and share the claim hash "
+            f"{rows['ff']['sha'][:16]}..")

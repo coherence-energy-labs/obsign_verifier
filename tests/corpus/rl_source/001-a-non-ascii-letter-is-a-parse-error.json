@@ -1,0 +1,13 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "Found as a CRASH. lex() decided what kind of token started at a character with c.isalpha() and c.isdigit(), which are Unicode-aware, then matched ASCII-only regexes and called m.group(0) with no None check: AttributeError, not a refusal, and not one of the five exception types replayc/__main__.py catches, so it reached the user as a traceback from `obsign-replayc check` on a file somebody handed them. The gap was exactly the width of the non-ASCII letters and digits.",
+  "id": "001-a-non-ascii-letter-is-a-parse-error",
+  "note": "A non-ASCII letter is refused with a source position, exactly as an emoji always was. The same holds for a non-ASCII DIGIT -- an Arabic-Indic three, a superscript two, a fullwidth one -- which is the harder half.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source": "input a; output \u00e9;",
+  "status": "agreed"
+}

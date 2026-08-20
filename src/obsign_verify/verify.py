@@ -293,14 +293,21 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
 
     # ---- pass 1: the per-input verdict. Stops at the first perturbation that moves
     # the output, because that is all it takes to establish dependence.
-    ladders = [_probe_values(x) for x in inputs]
+    #
+    # The ladder for input i is built ONLY when there is budget left to spend on it.
+    # Building all of them up front is n * ~30 integers before a single probe runs, and
+    # `inputs` is attacker-controlled up to 2^20 -- the same "work nobody charged for"
+    # that `_probe_cost` exists to close, reintroduced in the bookkeeping.
     tried = [0] * n
     per_input: list[str] = []
     for i in range(n):
+        if state["spent"] >= total_budget:
+            per_input.append("indeterminate")
+            continue
         verdict_i = "dead"      # until a perturbation says otherwise
         trapped = False
         exhausted = False
-        for probed in ladders[i]:
+        for probed in _probe_values(inputs[i]):
             outcome = probe(i, probed)
             if outcome is None:
                 exhausted = True
@@ -325,7 +332,10 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     # A cell may only be called dead once every perturbation has actually been run.
     swept = True
     for i in range(n):
-        for probed in ladders[i][tried[i]:]:
+        if state["spent"] >= total_budget:
+            swept = False
+            break
+        for probed in _probe_values(inputs[i])[tried[i]:]:
             if probe(i, probed) is None:
                 swept = False
                 break

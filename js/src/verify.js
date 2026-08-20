@@ -328,14 +328,19 @@ function inputLiveness(program, inputs, baseOut, baseSteps) {
 
   // pass 1: the per-input verdict, stopping at the first perturbation that moves the
   // output -- that is all it takes to establish dependence.
-  const ladders = inputs.map((x) => probeValues(x));
+  //
+  // The ladder for input i is built ONLY when there is budget left to spend on it:
+  // building all of them up front is n * ~30 BigInts before a single probe runs, and
+  // `inputs` is attacker-controlled up to 2^20 -- the same uncharged work `probeCost`
+  // exists to close, reintroduced in the bookkeeping.
   const tried = new Array(n).fill(0);
   const perInput = [];
   for (let i = 0; i < n; i++) {
+    if (spent >= totalBudget) { perInput.push('indeterminate'); continue; }
     let state = 'dead';
     let trapped = false;
     let exhausted = false;
-    for (const probed of ladders[i]) {
+    for (const probed of probeValues(inputs[i])) {
       const outcome = probe(i, probed);
       if (outcome === null) { exhausted = true; break; }
       tried[i] += 1;
@@ -353,7 +358,8 @@ function inputLiveness(program, inputs, baseOut, baseSteps) {
   // perturbation that proved the input live may have moved a different cell entirely.
   let swept = true;
   for (let i = 0; i < n && swept; i++) {
-    for (const probed of ladders[i].slice(tried[i])) {
+    if (spent >= totalBudget) { swept = false; break; }
+    for (const probed of probeValues(inputs[i]).slice(tried[i])) {
       if (probe(i, probed) === null) { swept = false; break; }
     }
   }

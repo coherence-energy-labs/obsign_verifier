@@ -1,0 +1,14 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "The residual of 008. The guard added to close it bounds the declared LENGTH rather than the total cell count, so it closes every case except the two where the difference between those two numbers matters.",
+  "id": "009-an-array-length-in-the-two-wide-band-still-splits-the-lowerings",
+  "note": "OPEN, and narrow. `arr m[1048576]` is exactly MAX_MEM, so the parse-time guard lets it through; the program also needs a cell for `a` and one for the output window, so codegen then refuses with 'program needs 1048578 cells, over the 1048576 limit'. Lengths 1048575 and 1048576 are the whole band -- 1048574 compiles, 1048577 is refused at parse. interpret_source still accepts and allocates the cells, because the oracle enforces no MAX_MEM of its own; it is bounded here only by a guard that lives in the parser and measures the wrong thing. The accept boundary of the language is compile_source, not parse_program, and in this band they differ.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "accept",
+    "refusal": "CodegenError"
+  },
+  "signature": "oracle-accepts compiler-refuses: CodegenError: program needs N cells, over the N limit",
+  "source": "input a; arr m[1048576]; output a;",
+  "status": "open"
+}

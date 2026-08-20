@@ -1,0 +1,26 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found as a live split. MAX_STRING_BYTES = 65536 was declared in the limits table of both canonical.py and js/src/canonical.js under a comment in each promising the other carried the same table -- and js/src/canonical.js declared the constant and never read it, so a receipt whose only sin was one long string loaded under `npm i obsign-verify` and was refused by `pip install obsign-verify`. Python and the Rust crate agreed on refusing, which made JavaScript the outlier two to one rather than merely the other side. Closed in the npm parser and in the verify page; this vector holds it closed.",
+  "id": "001-a-string-past-max-string-bytes-is-refused-everywhere",
+  "note": "A 65537-byte string value, one past MAX_STRING_BYTES. Every implementation refuses it. The limit applies to object KEYS as well as values, and to the BYTE length rather than the character count, so a multibyte string half as long in characters is refused too.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "python=refuse [string-bytes]",
+  "status": "agreed",
+  "text_repeat": {
+    "after": "\"}",
+    "before": "{\"a\":\"",
+    "count": 65537,
+    "unit": "x"
+  }
+}

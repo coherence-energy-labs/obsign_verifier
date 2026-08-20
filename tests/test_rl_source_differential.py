@@ -24,21 +24,32 @@ questions underneath it, both about SOURCE:
   narrow with an explicit `wrap`, so a mistake in that shared strategy is invisible to
   both, while Rust runs native i64 with `overflow-checks` on.
 
-WHAT THE CAMPAIGN FOUND
+WHAT THE CAMPAIGN FOUND, AND WHERE IT STANDS
 
-Zero result divergences: the interpreter, the Python VM, the JS VM and the Rust VM
-agreed on every program and every input the campaign reached, traps included. Five
-defect classes, over nine frozen vectors under `corpus/rl_source/`:
+Zero result divergences, first run to last: the interpreter, the Python VM, the JS VM
+and the Rust VM agreed on every program and every input the campaign reached, traps
+included. Every finding was on the other axis -- hostile SOURCE that crashed the front
+end instead of being refused by it:
 
-    a Unicode gap in the lexer                      AttributeError, not a refusal
-    unbounded recursion in the parser               RecursionError at 82 nested parens
-    an unbounded integer conversion on the way IN   ValueError out of lex()
-    three diagnostics that format one on the way OUT  ValueError raised inside a raise
-    an oracle with no MAX_MEM and no #steps ceiling  it runs what the compiler refuses
+    a Unicode gap in the lexer                     AttributeError, not a refusal
+    unbounded recursion in the parser              RecursionError at 82 nested parens
+    an unbounded integer conversion on the way IN  ValueError out of lex()
+    three diagnostics formatting one on the way OUT  ValueError raised inside a raise
+    an oracle with no MAX_MEM                      it ran what the compiler refused
 
-Every one is pinned below by an `xfail(strict=True)` test that explains it, and
-tolerated by the campaign only through the signature its corpus file records. A crash
-signature the corpus does not name fails the campaign.
+All of them are closed. `corpus/rl_source/` keeps them closed: nine vectors, each
+carrying the bytes, the refusal they must now produce, and the prose of the defect they
+came from. A settled vector is marked `agreed` and is NOT deleted -- the bytes that
+once crashed the lexer are the cheapest possible test that it does not crash any more,
+and the history is the only artifact that says why the limit sits where it sits.
+
+One residual is marked `open` and pinned by the single `xfail(strict=True)` left in
+this file: an array length of exactly 1048575 or 1048576 still parses and then fails in
+codegen, because the guard that closed the rest bounds the declared LENGTH rather than
+the total cell count.
+
+A crash class the corpus does not name fails the campaign outright, which is what makes
+this a ratchet rather than a report.
 
 `OBSIGN_FUZZ=full` runs the long campaign; `OBSIGN_FUZZ_CASES` and `OBSIGN_FUZZ_SEEDS`
 set the knobs directly.
@@ -61,7 +72,6 @@ import pytest
 
 from obsign_verify.replay import Trap
 from obsign_verify.replay import run as vm_run
-from obsign_verify.replayc.codegen import CodegenError
 from obsign_verify.replayc import compile_source, parse_program
 from obsign_verify.replayc import interp as _interp
 from obsign_verify.replayc.codegen import CodegenError
@@ -184,10 +194,13 @@ def corpus_source(entry: dict) -> str:
     return entry["source"]
 
 
-_KNOWN_CRASHES = {e["signature"] for e in corpus_entries()
-                  if e["kind"] == "front-end-crash"}
+#: Crash classes the campaign tolerates. EMPTY, and meant to stay empty: every crash it
+#: found has been closed in the front end, so any crash at all is now a new finding.
+_KNOWN_CRASHES: set[str] = set()
+
+#: Oracle/compiler accept splits still recorded as open.
 _KNOWN_SPLITS = {e["signature"] for e in corpus_entries()
-                 if e["kind"] == "accept-split"}
+                 if e.get("status") == "open" and e.get("signature")}
 
 
 # ------------------------------------------------------------------------- vacuity
@@ -483,10 +496,13 @@ def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
     instruction -- so they are compile-time refusals (CodegenError) on both sides
     rather than a runtime Trap on one, and the two doors now admit one language.
 
-    Two things are wrong at once. The oracle and the compiler disagree about which
+    Two things were wrong at once. The oracle and the compiler disagreed about which
     programs exist, which is the same class of split as any two parsers disagreeing
     about which receipts exist; and the oracle, which is supposed to carry "the SAME
-    totality as the machine", has one bound the machine has and it does not.
+    totality as the machine", was missing a bound the machine has.
+
+    The fix does not reach all the way. See the test below for the two array lengths
+    that still get through.
     """
     # 2,000,000 cells, just past MAX_MEM's 1,048,576. The corpus vector uses
     # 99,999,999 because that is the sharp witness; this proves the same split without
@@ -502,6 +518,35 @@ def test_the_oracle_refuses_an_array_the_machine_could_never_hold():
     assert not accepted, (
         "interpret_source ran a program the compiler refuses as too large -- the "
         "oracle enforces no MAX_MEM")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "OPEN: the parse-time memory guard bounds the declared array LENGTH, not the total "
+    "cell count, so lengths of 1048575 and 1048576 parse and then fail in codegen."))
+@pytest.mark.parametrize("length", [1_048_575, 1_048_576], ids=["max-1", "max"])
+def test_the_two_lowerings_agree_at_the_memory_limit(length):
+    """A two-wide band where the oracle still accepts what the compiler refuses.
+
+    Moving MAX_MEM into `parse_program` closed almost all of this: `arr m[1048577]` and
+    everything above it is now refused at parse, by both paths, before either runs. But
+    the guard compares the declared LENGTH against MAX_MEM, and a program needs cells
+    for its scalars and its output window too -- so at exactly the limit, and one below
+    it, parse says yes and codegen then says "program needs 1048578 cells, over the
+    1048576 limit". 1048574 compiles; 1048577 is refused at parse; these two are the
+    whole band.
+
+    It is narrow and it is still the same shape of defect: the accept boundary of the
+    language is `compile_source`, not `parse_program`, and `interpret_source` -- which
+    only runs `parse_program` -- will happily allocate a million cells for a program the
+    compiler will not build. A guard that measures the wrong quantity closes every case
+    except the ones where the difference between the two quantities is what matters.
+    """
+    src = f"input a; arr m[{length}]; output a;"
+    parse = front_end(src, parse_program)[0]
+    compile_ = front_end(src, compile_source)[0]
+    assert parse == compile_, (
+        f"parse_program says {parse!r} and compile_source says {compile_!r} for an "
+        f"array of {length} cells -- the two lowerings admit different languages")
 
 
 @pytest.mark.skipif(not _HAS_RUST, reason="rust/target/release/obsign-verify-rs is not built")
@@ -572,38 +617,57 @@ def test_the_rust_vm_agrees_with_the_python_vm(seed):
 # ------------------------------------------------------------------- the corpus
 
 def test_the_corpus_is_present_and_describes_itself():
+    """A vector is not deleted when its defect is fixed; it is marked `agreed`.
+
+    The bytes that once crashed the lexer are the cheapest possible test that it does
+    not crash any more, and the `history` field is what keeps a settled vector from
+    reading, a year from now, like an arbitrary edge case somebody happened to pick.
+    Deleting them would throw away the only artifact that says WHY the limit is where
+    it is -- and this suite's own habit is to keep the reproducer next to the fix.
+    """
     entries = corpus_entries()
-    # An EMPTY corpus is the goal state, not a broken harness: every vector
-    # here was a real divergence, and each is deleted only when all
-    # implementations agree on it. The machinery stays so the next one has
-    # somewhere to land.
-    for e in entries:
-        assert e.get("path"), "corpus entry has no path"
+    assert len(entries) >= 8, f"only {len(entries)} frozen vector(s)"
     for e in entries:
         assert e.get("note"), f"{e['path'].name} has no prose saying what it proves"
-        assert e.get("signature"), f"{e['path'].name} has no signature"
-        assert e.get("kind") in ("front-end-crash", "accept-split"), e["path"].name
+        assert e.get("history"), f"{e['path'].name} does not say what it came from"
+        assert e.get("status") in ("agreed", "open"), e["path"].name
+        assert e.get("observed"), e["path"].name
         assert "source" in e or "source_repeat" in e, e["path"].name
+        if e["status"] == "agreed":
+            assert e["observed"]["parse"] == e["observed"]["compile"], (
+                f"{e['path'].name} is marked agreed but its two lowerings differ")
+        else:
+            assert e["observed"]["parse"] != e["observed"]["compile"], (
+                f"{e['path'].name} is marked open but records agreement")
+            assert e.get("signature"), f"{e['path'].name} is open with no signature"
+    assert sum(1 for e in entries if e["status"] == "agreed") >= 7, (
+        "almost nothing in this corpus is settled -- either the front end regressed "
+        "or the schema drifted")
 
 
 @pytest.mark.parametrize("entry", corpus_entries(),
                          ids=[e["path"].stem for e in corpus_entries()])
 def test_every_frozen_vector_still_behaves_as_recorded(entry):
-    """If this fails the defect was fixed or moved, and the vector comes out with it."""
+    """The ratchet, and it runs in both directions.
+
+    A settled vector that stops being settled is a regression. An open one that closes
+    is news, and its entry gets re-measured rather than quietly ignored.
+    """
     src = corpus_source(entry)
     kp, dp, _ = front_end(src, parse_program)
     kc, dc, _ = front_end(src, compile_source)
-    if entry["kind"] == "front-end-crash":
-        got = [crash_signature(d) for k, d in ((kp, dp), (kc, dc)) if k == "CRASH"]
-        assert entry["signature"] in got, (
-            f"{entry['path'].name}: expected the crash {entry['signature']!r}, got "
-            f"parse={kp}({dp[:80]}) compile={kc}({dc[:80]}). {entry['note']}")
-    else:
-        assert kp == "accept" and kc == "refuse", (
-            f"{entry['path'].name}: the oracle/compiler split closed -- "
-            f"parse={kp} compile={kc}. {entry['note']}")
-        assert entry["signature"].endswith(crash_signature(dc)), \
-            f"{entry['path'].name}: the refusal changed to {dc[:100]!r}"
+    obs = entry["observed"]
+    assert (kp, kc) == (obs["parse"], obs["compile"]), (
+        f"{entry['path'].name}: now parse={kp} compile={kc}, the vector recorded "
+        f"parse={obs['parse']} compile={obs['compile']}.\n  {dp or dc}\n"
+        f"  {entry['note']}")
+    if obs.get("refusal"):
+        got = (dp or dc).split(":")[0]
+        assert got == obs["refusal"], (
+            f"{entry['path'].name}: refused with {got}, the vector recorded "
+            f"{obs['refusal']}. A refusal only counts if the CLI catches it, and "
+            f"replayc/__main__.py catches exactly "
+            f"{sorted(c.__name__ for c in DECLARED)}")
 
 
 def test_the_recursion_limit_is_the_default_this_corpus_assumes():

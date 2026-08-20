@@ -1,0 +1,21 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found as a live split, and the interesting part was WHY Python refused. Both JavaScript parsers accepted it and agreed byte-for-byte on the canonical form {\"\\ud800\":1}. Python refused by accident: _check_shape called len(k.encode(\"utf-8\")) to apply the string-length limit, and the UnicodeEncodeError that escaped is what refused the receipt -- a side effect of measuring a length, not a rule anybody had written down. canonical_bytes would have handled the value perfectly well. Now stated and applied deliberately everywhere.",
+  "id": "003-an-unpaired-surrogate-escape-is-refused-everywhere",
+  "note": "A key written as the escape \\ud800: legal JSON grammar, not legal Unicode, and with no UTF-8 encoding at all. A receipt is a UTF-8 document, so this is not one, and every implementation now says so.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "python=refuse [lone-surrogate]",
+  "status": "agreed",
+  "text": "{\"\\ud800\":1}"
+}

@@ -1,0 +1,13 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "Found as an ORACLE/COMPILER ACCEPT SPLIT. codegen refused; interp.Interpreter.run did [0] * arr.length with no limit at all, so interpret_source -- a public entry point exported in replayc.__all__ -- accepted the same program and allocated 800 MB for it, and one more zero was a MemoryError, which is neither a Trap nor a refusal. The oracle is documented as carrying 'the SAME totality as the machine' and was missing a bound the machine has. Note the residual: the parse-time guard compares the array length against MAX_MEM without counting the cells the program's own scalars need, so lengths of exactly 1048575 and 1048576 still parse and then fail in codegen. See 009.",
+  "id": "008-an-array-larger-than-the-machine-is-refused-by-both-lowerings",
+  "note": "MAX_MEM is 1,048,576 cells -- replay.py: '1M cells. A receipt is a document, not a workload.' A program asking for a hundred times that is refused before either lowering runs it, so the oracle and the compiler agree about which programs exist.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "CodegenError"
+  },
+  "source": "input a; arr m[99999999]; output a;",
+  "status": "agreed"
+}

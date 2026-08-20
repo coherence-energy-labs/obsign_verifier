@@ -1,0 +1,21 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found as a live off-by-one. js/src/canonical.js counted containers and refused above 32; canonical.py started _check_shape at depth 0 on the top-level object and bounded the deepest value, which admitted 33 containers whenever the innermost was empty -- so Python and Rust loaded a document the npm parser refused. MAX_DEPTH was 32 in both files and meant two different things. Settled on the container count, which is the rule a reader can state without reading the code.",
+  "id": "002-thirty-three-nested-containers-are-refused-everywhere",
+  "note": "33 nested containers with an empty innermost. 32 loads everywhere; this refuses everywhere. The empty innermost is the whole point of the vector: a depth rule that measures the deepest VALUE rather than the container nesting reads this document as one level shallower than it is.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "npm=refuse [depth]",
+  "status": "agreed",
+  "text": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+}

@@ -1,0 +1,18 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "The third site of the defect described in 005 and 006.",
+  "id": "007-an-over-wide-hex-steps-pragma-is-a-parse-error",
+  "note": "The same literal as a #steps budget, refused the same way.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source_repeat": {
+    "after": "\ninput a; output a;",
+    "before": "#steps 0x",
+    "count": 5000,
+    "unit": "f"
+  },
+  "status": "agreed"
+}

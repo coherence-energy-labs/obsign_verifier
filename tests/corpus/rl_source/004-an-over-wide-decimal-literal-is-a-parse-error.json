@@ -1,0 +1,18 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "Found as a CRASH. lex() built the value with int(text, base) the moment it saw the digits, and past 4300 decimal digits CPython refuses the conversion itself, so a raw ValueError escaped with no position and no diagnosis. docs/RL.md said 'All literals fit int64 or fail to compile'; this one failed differently. The receipt parser had met the identical CPython limit and closed it deliberately with MAX_INT_DIGITS.",
+  "id": "004-an-over-wide-decimal-literal-is-a-parse-error",
+  "note": "4301 digits, one past the limit, refused in the lexer with a position and a count. 4300 digits reaches the typer and is refused there for not fitting in int64 -- a different message for a different reason, which is correct.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source_repeat": {
+    "after": ";",
+    "before": "input a; output ",
+    "count": 4301,
+    "unit": "9"
+  },
+  "status": "agreed"
+}
