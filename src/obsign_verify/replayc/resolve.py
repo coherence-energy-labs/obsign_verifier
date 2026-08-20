@@ -51,7 +51,7 @@ def _subst_expr(e: nodes.Expr, env: dict[str, int]) -> nodes.Expr:
 def _subst_stmt(s: nodes.Stmt, env: dict[str, int]) -> nodes.Stmt:
     if isinstance(s, nodes.Let):
         _no_collision(s.name, env, s.pos, "let")
-        return nodes.Let(s.name, _subst_expr(s.expr, env), s.pos)
+        return nodes.Let(s.name, _subst_expr(s.expr, env), s.pos, s.scale)
     if isinstance(s, nodes.Assign):
         _no_collision(s.name, env, s.pos, "assignment target")
         return nodes.Assign(s.name, _subst_expr(s.expr, env), s.pos)
@@ -102,7 +102,8 @@ def resolve(prog: nodes.Program) -> nodes.Program:
         if isinstance(a.length, int):
             return a
         return nodes.ArrayDecl(a.name, _const_value(a.length, env, a.pos,
-                                                    f"length of array {a.name!r}"), a.pos)
+                                                    f"length of array {a.name!r}"),
+                               a.pos, a.scale)
 
     for name in prog.inputs:
         _no_collision(name, env, prog.pos, "input")
@@ -113,7 +114,8 @@ def resolve(prog: nodes.Program) -> nodes.Program:
         for p in fn.params:
             _no_collision(p, env, fn.pos, f"parameter of fn {fn.name!r}")
         functions.append(nodes.FnDecl(fn.name, fn.params,
-                                      tuple(_subst_stmt(s, env) for s in fn.body), fn.pos))
+                                      tuple(_subst_stmt(s, env) for s in fn.body),
+                                      fn.pos, fn.param_scales))
 
     return nodes.Program(
         inputs=prog.inputs,
@@ -124,5 +126,6 @@ def resolve(prog: nodes.Program) -> nodes.Program:
         input_array=_decl(prog.input_array) if prog.input_array is not None else None,
         functions=tuple(functions),
         consts=(),
+        input_scales=prog.input_scales,
         pos=prog.pos,
     )

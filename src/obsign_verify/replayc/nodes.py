@@ -91,6 +91,7 @@ class Let(Stmt):
     name: str
     expr: Expr
     pos: Pos
+    scale: Optional[int] = None      # `let x: fxN = ...` -- fixed-point scale annotation
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,7 @@ class FnDecl:
     params: tuple[str, ...]
     body: tuple[Stmt, ...]           # last statement is the Return
     pos: Pos
+    param_scales: tuple[Optional[int], ...] = ()   # parallel to params; None = unannotated
 
 
 # --------------------------------------------------------------------------- program
@@ -176,6 +178,7 @@ class ArrayDecl:
     name: str
     length: int                       # parser may hold an Expr; resolve() makes it int
     pos: Pos
+    scale: Optional[int] = None       # `arr xs[N]: fxN;` -- one scale for every element
 
 
 @dataclass(frozen=True)
@@ -188,4 +191,5 @@ class Program:
     input_array: Optional[ArrayDecl] = None   # `input xs[N];` -- the window as an array
     functions: tuple[FnDecl, ...] = ()
     consts: tuple[tuple[str, "Expr"], ...] = ()   # raw `const` decls; emptied by resolve()
+    input_scales: tuple[Optional[int], ...] = ()  # parallel to inputs; None = unannotated
     pos: Pos = field(default_factory=lambda: Pos(1, 1))

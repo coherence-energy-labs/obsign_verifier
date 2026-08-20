@@ -55,7 +55,7 @@ BUILTINS = {"min", "max", "abs", "sel", "mulfx", "len"}
 
 # Longest-match first so '<<' beats '<' and '<=' beats '<'.
 _SYMBOLS = ["<<", ">>", "<=", ">=", "==", "!=", "..", "|", "^", "&", "<", ">",
-            "+", "-", "*", "/", "%", "~", "=", "(", ")", "[", "]", "{", "}", ",", ";"]
+            "+", "-", "*", "/", "%", "~", "=", "(", ")", "[", "]", "{", "}", ",", ";", ":"]
 
 
 class ParseError(Exception):
@@ -181,6 +181,7 @@ class Parser:
         functions: list[nodes.FnDecl] = []
         consts: list[tuple[str, nodes.Expr]] = []
         input_array: nodes.ArrayDecl | None = None
+        self.input_scales: list[int | None] = []
         seen_output = False
         while not self._at("eof"):
             if self._at("kw", "input"):
@@ -208,21 +209,38 @@ class Parser:
             self._err("program has no `output` -- a receipt with nothing to hash is a collision")
         pos = self.toks[0].pos
         return nodes.Program(tuple(inputs), tuple(arrays), tuple(body), tuple(outputs),
-                             steps, input_array, tuple(functions), tuple(consts), pos)
+                             steps, input_array, tuple(functions), tuple(consts),
+                             tuple(self.input_scales), pos)
 
     def _parse_fn(self) -> nodes.FnDecl:
         t = self._eat("kw", "fn")
         name = self._eat("ident").text
         self._eat("sym", "(")
         params: list[str] = []
+        pscales: list[int | None] = []
         if not self._at("sym", ")"):
             params.append(self._eat("ident").text)
+            pscales.append(self._parse_scale())
             while self._at("sym", ","):
                 self._next()
                 params.append(self._eat("ident").text)
+                pscales.append(self._parse_scale())
         self._eat("sym", ")")
         body = self._parse_block()
-        return nodes.FnDecl(name, tuple(params), body, t.pos)
+        return nodes.FnDecl(name, tuple(params), body, t.pos, tuple(pscales))
+
+    def _parse_scale(self) -> int | None:
+        """An optional `: fxN` fixed-point scale annotation, N in 0..63. fx0 is a
+        deliberate spelling for "definitely a plain integer" -- it differs from no
+        annotation, which means "unknown, compatible with anything"."""
+        if not self._at("sym", ":"):
+            return None
+        self._next()
+        t = self._eat("ident")
+        m = re.fullmatch(r"fx([0-9]+)", t.text)
+        if not m or int(m.group(1)) > 63:
+            raise ParseError(f"scale annotation must be fx0..fx63, got {t.text!r}", t.pos)
+        return int(m.group(1))
 
     def _parse_input(self, inputs: list[str]) -> nodes.ArrayDecl | None:
         """Either `input a, b, c;` (scalars) or `input xs[N];` (the window as an array).
@@ -233,12 +251,15 @@ class Parser:
             self._next()
             length = self._parse_expr()
             self._eat("sym", "]")
+            scale = self._parse_scale()
             self._eat("sym", ";")
-            return nodes.ArrayDecl(first.text, length, first.pos)
+            return nodes.ArrayDecl(first.text, length, first.pos, scale)
         inputs.append(first.text)
+        self.input_scales.append(self._parse_scale())
         while self._at("sym", ","):
             self._next()
             inputs.append(self._eat("ident").text)
+            self.input_scales.append(self._parse_scale())
         self._eat("sym", ";")
         return None
 
@@ -248,8 +269,9 @@ class Parser:
         self._eat("sym", "[")
         length = self._parse_expr()      # a const-expression; resolve() makes it an int
         self._eat("sym", "]")
+        scale = self._parse_scale()
         self._eat("sym", ";")
-        return nodes.ArrayDecl(name, length, t.pos)
+        return nodes.ArrayDecl(name, length, t.pos, scale)
 
     def _parse_output(self, outputs: list[nodes.Expr]) -> None:
         self._eat("kw", "output")
@@ -275,10 +297,11 @@ class Parser:
         if t.kind == "kw" and t.text == "let":
             self._next()
             name = self._eat("ident").text
+            scale = self._parse_scale()
             self._eat("sym", "=")
             e = self._parse_expr()
             self._eat("sym", ";")
-            return nodes.Let(name, e, t.pos)
+            return nodes.Let(name, e, t.pos, scale)
         if t.kind == "kw" and t.text == "if":
             self._next()
             cond = self._parse_expr()

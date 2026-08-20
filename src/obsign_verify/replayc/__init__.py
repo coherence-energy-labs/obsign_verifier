@@ -36,23 +36,28 @@ from .codegen import CodegenError
 from .disasm import disassemble
 from .frontend import ParseError
 from .nodes import Program
+from .scales import ScaleError
 from .typer import TypeError_ as TypeError
 
 __all__ = [
     "compile_source", "run_source", "interpret_source", "ir_sha256",
     "disassemble", "output_sha256", "parse_program",
-    "ParseError", "TypeError", "CodegenError",
+    "ParseError", "TypeError", "CodegenError", "ScaleError",
 ]
 
 
 def parse_program(text: str) -> Program:
-    """Source -> resolved, checked AST. Raises ParseError, ResolveError or TypeError
-    with a source position. This is the LAST shared step between the two paths:
-    everything after it is either compile-side (inline -> fold -> generate) or
-    oracle-side (direct evaluation, with native function calls), never both."""
+    """Source -> resolved, checked AST. Raises ParseError, ResolveError, TypeError or
+    ScaleError with a source position. This is the LAST shared step between the two
+    paths: everything after it is either compile-side (inline -> fold -> generate) or
+    oracle-side (direct evaluation, with native function calls), never both. Sharing
+    the static checks is safe because they only ever REJECT -- a check cannot make the
+    two paths compute different numbers, only refuse the same program."""
     from .resolve import resolve
+    from .scales import check_scales
     ast = resolve(frontend.parse(text))
     typer.check(ast)
+    check_scales(ast)
     return ast
 
 
