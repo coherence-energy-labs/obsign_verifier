@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from obsign_verify.replay import Trap, output_sha256
+from obsign_verify.replay import Trap, output_sha256, run
 from obsign_verify.replayc import compile_source, interpret_source, run_source
 
 _HAS_NODE = shutil.which("node") is not None
@@ -87,6 +87,72 @@ def test_compiled_programs_agree_on_python_and_js_vms():
             assert got.get("trap") is True, f"expected TRAP on js, got {got} for inputs {case['inputs']}"
         else:
             assert got.get("ok") == val, f"js {got} != python {val} for inputs {case['inputs']}"
+
+
+#: A well-formed program, and then the same program with ONE structural scalar
+#: written as a JSON `true` or as a JSON float. Nothing but the LOAD rule separates
+#: these from the sound one: `true` collapses to 1 and `4.0` equals 4, so an
+#: implementation that admits either runs the program and answers 0, while one that
+#: refuses it traps. Both are int64 machines and both are right about the arithmetic
+#: -- they simply disagree about which programs EXIST, which is the disagreement a
+#: receipt format cannot absorb, because a forger picks the implementation that loads.
+#: One instruction and a one-step budget, so that substituting `true` (which is 1)
+#: for a scalar still leaves a program that RUNS. Otherwise a case would trap on the
+#: step budget and look like agreement.
+_SOUND_PROGRAM = {
+    "spec": "obsign/replay/1", "mem": 4, "steps": 8, "consts": [0],
+    "input": {"offset": 2, "length": 1}, "output": {"offset": 0, "length": 1},
+    "code": [["HALT"]],
+}
+_MALFORMED_SCALARS = [
+    ("mem=true", {"mem": True, "input": {"offset": 0, "length": 1},
+                  "output": {"offset": 0, "length": 1}}),
+    ("steps=true", {"steps": True}),
+    ("input.offset=true", {"input": {"offset": True, "length": 1}}),
+    ("input.length=true", {"input": {"offset": 2, "length": True}}),
+    ("output.offset=true", {"output": {"offset": True, "length": 1}}),
+    ("output.length=true", {"output": {"offset": 0, "length": True}}),
+    ("mem=4.0", {"mem": 4.0}),
+    ("steps=8.0", {"steps": 8.0}),
+    ("input.offset=2.0", {"input": {"offset": 2.0, "length": 1}}),
+    ("input.length=1.0", {"input": {"offset": 2, "length": 1.0}}),
+    ("output.offset=0.0", {"output": {"offset": 0.0, "length": 1}}),
+    ("output.length=1.0", {"output": {"offset": 0, "length": 1.0}}),
+    ("operand=0.0", {"code": [["MOV", 0.0, 2], ["HALT"]]}),
+    ("jump target=1.0", {"code": [["JMP", 1.0], ["HALT"]]}),
+]
+
+
+@pytest.mark.skipif(not _HAS_NODE and not _REQUIRED, reason="node not installed")
+def test_both_vms_agree_on_which_malformed_programs_LOAD():
+    """The two VMs must refuse the same programs, not merely compute the same numbers.
+
+    Python's `bool` subclasses `int`, so a bare `isinstance(x, int)` admitted
+    `"mem": true`; JavaScript's structural check accepted any safe-integer Number,
+    and after canonical.js an integer literal is a BigInt while a FLOAT literal is a
+    Number, so `"mem": 4.0` was admitted there. Each implementation loaded programs
+    the other refused, in opposite directions -- a malformed receipt that verifies
+    depending on which verifier the reader happened to install.
+    """
+    assert _HAS_NODE, "OBSIGN_REQUIRE=node was set but node is not installed"
+
+    # the sound program first: this battery must not be passing by refusing everything
+    cases = [{"programText": json.dumps(_SOUND_PROGRAM), "inputs": ["0"]}]
+    for _name, over in _MALFORMED_SCALARS:
+        cases.append({"programText": json.dumps({**_SOUND_PROGRAM, **over}),
+                      "inputs": ["0"]})
+
+    js = _run_js(cases)
+    assert js[0].get("ok") == ["0"], f"the sound program must RUN on the JS VM: {js[0]}"
+    assert run(_SOUND_PROGRAM, [0]) == [0], "the sound program must run on the Python VM"
+
+    for (name, over), got in zip(_MALFORMED_SCALARS, js[1:]):
+        prog = {**_SOUND_PROGRAM, **over}
+        with pytest.raises(Trap):
+            run(prog, [0])
+        assert got.get("trap") is True, (
+            f"{name}: Python refuses this program and the JS VM loaded it ({got}) -- "
+            f"the two implementations disagree on what a receipt IS")
 
 
 @pytest.mark.skipif(not _HAS_NODE and not _REQUIRED, reason="node not installed")
