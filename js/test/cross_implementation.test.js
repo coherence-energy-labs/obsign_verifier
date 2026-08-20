@@ -319,3 +319,30 @@ test('a hostile program is refused, not thrown past the caller', () => {
   assert.strictEqual(res.verified, false);
   assert.ok(res.notes.some((n) => /refused|budget|window/.test(n)), res.notes.join('; '));
 });
+
+// --------------------------------------------------------------------------
+// The guarded-constant attack must reach the SAME refusal here as in Python.
+//
+// A trap on a perturbed input used to read as "live" in both implementations, so
+// a constant behind an equality guard cleared the one check built to catch it.
+// The receipt below was minted by the PYTHON implementation from:
+//
+//     input a, b;  let ok = 0;
+//     if a == 5 { if b == 7 { ok = 1; } }
+//     let guard = 1 / ok;      // traps on every perturbation
+//     output 424242;           // ... and the output is a CONSTANT
+//
+// It re-derives perfectly and hashes correctly. It must still be refused, and the
+// two implementations must agree on WHY -- a verifier that refuses in Python and
+// passes in the browser is the divergence this whole file exists to prevent.
+test('the guarded constant is refused identically in both implementations', () => {
+  const p = path.join(__dirname, 'fixtures', 'guarded_constant_receipt.json');
+  if (!fs.existsSync(p)) return;   // fixture emitted by the Python conformance step
+  const receipt = loadReceipt(fs.readFileSync(p, 'utf8'));
+  const v = verify(receipt);
+  assert.strictEqual(v.integrity, true, 'precondition: the attack hashes correctly');
+  assert.strictEqual(v.reproduced, true, 'precondition: the attack re-derives');
+  assert.strictEqual(v.input_liveness, 'guarded',
+    'a trapped perturbation is the attacker\'s choice, not evidence of dependence');
+  assert.strictEqual(v.verified, false, 'a hardcoded constant must not verify');
+});

@@ -58,31 +58,57 @@ _I64_MAX = (1 << 63) - 1
 
 
 def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
-    """Does the output actually depend on the declared inputs?
+    """What evidence is there that the output depends on the declared inputs?
 
     A receipt proves "re-run this program on these inputs and you get this hash".
     That is empty if the program ignores the inputs: a two-instruction program that
     loads a constant and halts re-derives PERFECTLY and is signed and integral, yet
-    establishes nothing about the inputs it names. `--expect-program` does not help
-    -- the constant program has a perfectly good, pinnable digest. The only thing
-    that separates it from a real computation is that perturbing an input moves the
-    answer, and that is checkable here, on the VM already in hand, with no toolchain.
+    establishes nothing about the inputs it names.
 
-    This is an EXISTENCE PROOF, not a static approximation: find one input whose
-    change moves the output (or changes whether the program traps at all) and the
-    program demonstrably uses its inputs. Returns one of:
+    WHAT THIS CAN AND CANNOT ESTABLISH -- read before trusting a "live".
 
-        "live"          -- at least one input demonstrably affects the outcome
-        "dead"          -- EVERY input was fully probed and NONE affected it
-        "indeterminate" -- the probe budget ran out before proving either
+    Perturbing an input and watching the output move is EVIDENCE OF DEPENDENCE. It
+    is not, and cannot be, proof that the program computes the formula its name
+    claims. An adversary can always write
 
-    The verdict only ever REFUSES on "dead", and "dead" is only returned after every
-    input has been exercised within budget. An honest program is found live on its
-    first live input, so it costs about one extra run; only the attack -- a program
-    that genuinely ignores its inputs -- pays the full sweep, and such a program is
-    cheap by construction (it does no work). "indeterminate" never refuses: a
-    verifier must not reject an honest receipt merely because it was too expensive
-    to fully probe. Fail towards NOT accusing.
+        if inputs == this_quarter_exact_inputs:  return the number I want
+        else:                                    run the real formula
+
+    which behaves correctly under every perturbation anyone thinks to try. No
+    finite black-box probe closes that. The semantic boundary is an APPROVED
+    PROGRAM IDENTITY -- `--expect-program`, a digest a validator recorded after
+    READING the program -- and this probe is diagnostic evidence beneath it.
+
+    A TRAP IS NOT EVIDENCE OF DEPENDENCE. This once counted a trap on a perturbed
+    input as "live", reasoning that the value controls whether an output exists at
+    all. The attacker controls when the program traps, so that handed the
+    hardcoded-constant attack a way straight back through the check:
+
+        input a, b;  let ok = 0;
+        if a == 5 { if b == 7 { ok = 1; } }
+        let guard = 1 / ok;        // traps unless the inputs are the receipted ones
+        output 424242;             // ... and the output is a CONSTANT
+
+    Every probe perturbs, hits the guard, traps -- and the old probe called that
+    proof the constant depended on its inputs. A trap now says only that the
+    program REFUSED TO RUN, which is not information about the output, so it is
+    recorded as "guarded" and never as evidence.
+
+    Returns (verdict, per_input) where per_input[i] is one of:
+
+        "live"          -- some perturbation of input i MOVED the output
+        "guarded"       -- every perturbation of input i trapped; the program
+                           declined to run, so nothing was learned about the output
+        "dead"          -- input i was fully exercised and never moved the output
+        "indeterminate" -- the probe budget ran out on input i
+
+    and the overall verdict is "live" if any input is live, else "indeterminate" if
+    any is indeterminate, else "guarded" if any is guarded, else "dead".
+
+    Only "dead" and "guarded" refuse, and both are sound NEGATIVES: in each case
+    the run produced no evidence that any declared input reaches the output.
+    "indeterminate" never refuses -- a verifier must not reject an honest receipt
+    merely because it was expensive to probe. Fail towards not accusing.
 
     The probe is bounded so it can never be turned into a denial-of-service
     amplifier: total perturbation work is capped at a small multiple of the base
@@ -90,7 +116,7 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     """
     n = len(inputs)
     if n == 0:
-        return "n/a"  # a program with no declared inputs makes no claim about any
+        return "n/a", []  # a program with no declared inputs makes no claim about any
 
     # Cap ONE perturbation run, and cap the TOTAL. A single probe never runs longer
     # than the base did (plus a small floor for near-instant programs), so a program
@@ -102,33 +128,47 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     total_budget = max(base_steps * 8, 4_000_000)
     spent = 0
 
+    per_input: list[str] = []
     for i in range(n):
         original = inputs[i]
+        state = "dead"          # until a perturbation says otherwise
+        trapped = False
+        exhausted = False
         for d in _LIVENESS_DELTAS:
             probed = original + d
             if probed < _I64_MIN or probed > _I64_MAX:
                 continue  # keep the perturbation a valid int64; an ingest rejection
                           # is not evidence about the program's use of the value
             if spent >= total_budget:
-                return "indeterminate"  # never refuse for want of budget
+                exhausted = True
+                break
             trial = list(inputs)
             trial[i] = probed
             try:
                 out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
                 spent += used
                 if out != base_out:
-                    return "live"  # the value moved the answer
+                    state = "live"    # the value moved the answer: real evidence
+                    break
             except replaymod.Trap:
                 spent += per_run_cap  # unknown actual cost; charge the cap
-                # The inputs are all valid int64, so a Trap here came from the
-                # program's own guards or arithmetic (a domain guard, a row-count
-                # pin, a divide-by-zero): the value controls whether an output
-                # exists at all, which is dependence. Even a probe that only hit the
-                # per-run cap proves the perturbed run BEHAVES DIFFERENTLY from the
-                # base, which took fewer steps -- still dependence.
-                return "live"
+                trapped = True        # the program declined to run: NOT evidence
+        if state != "live":
+            # An exhausted budget is the weakest thing we can say, so it wins over
+            # "guarded"; both are weaker than a definite "dead", which requires
+            # every perturbation to have actually RUN and left the output alone.
+            state = "indeterminate" if exhausted else ("guarded" if trapped else "dead")
+        per_input.append(state)
 
-    return "dead"  # every input exercised within budget, none moved the outcome
+    if "live" in per_input:
+        verdict = "live"
+    elif "indeterminate" in per_input:
+        verdict = "indeterminate"
+    elif "guarded" in per_input:
+        verdict = "guarded"
+    else:
+        verdict = "dead"
+    return verdict, per_input
 
 
 def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
@@ -190,22 +230,39 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
         notes.append("output length does not match the re-executed result")
 
     # A re-derivation that does not depend on the inputs proves nothing about them.
-    # Only "dead" -- every declared input exercised and none moved the outcome --
-    # refuses; "indeterminate" (probe budget spent) never does.
-    liveness = _input_liveness(prog, inputs, out, base_steps)
+    # "dead" and "guarded" both refuse: in each case NOTHING was observed reaching
+    # the output from any declared input. "indeterminate" (probe budget spent) never
+    # refuses. A "live" is EVIDENCE, not a semantic guarantee -- see _input_liveness.
+    liveness, per_input = _input_liveness(prog, inputs, out, base_steps)
     result["input_liveness"] = liveness
-    live_ok = liveness != "dead"
+    result["input_liveness_by_input"] = per_input
+    live_ok = liveness not in ("dead", "guarded")
     if liveness == "dead":
         notes.append(
             "the output does not depend on ANY declared input: every input was "
             "perturbed and the result never changed. This program ignores its "
             "inputs, so re-deriving it proves nothing about them -- a constant "
             "dressed as a computation. REFUSED.")
+    elif liveness == "guarded":
+        notes.append(
+            "no declared input was shown to reach the output, and the program "
+            "TRAPPED on every perturbation that did not. A program that refuses to "
+            "run on anything but its own receipted inputs yields no evidence that "
+            "those inputs produced this answer -- the shape of a hardcoded result "
+            "behind an equality guard. REFUSED.")
     elif liveness == "indeterminate":
         notes.append(
             "input-liveness probe hit its budget before proving dependence either "
             "way; not treated as a failure (a verifier must not refuse an honest "
             "receipt for being expensive to probe)")
+    if liveness == "live":
+        dark = [i for i, st in enumerate(per_input) if st != "live"]
+        notes.append(
+            "input-liveness is EVIDENCE, not proof: perturbing an input moved the "
+            "output, which shows dependence but cannot show the program computes "
+            "the formula its name claims. Pin an approved program digest "
+            "(--expect-program) for that."
+            + (f" Inputs {dark} were not shown to reach the output." if dark else ""))
 
     sig_ok = _signature_gate(receipt, result, notes)
 

@@ -136,17 +136,32 @@ function verify(receipt) {
     // Mirror of the Python verifier's rule, so the two agree byte-for-byte on the
     // trivial-constant attack: only "dead" (every declared input perturbed, none
     // moved the outcome) refuses; "indeterminate" never does.
-    const liveness = inputLiveness(program, inputs, out, baseSteps);
+    const { verdict: liveness, perInput } = inputLiveness(program, inputs, out, baseSteps);
     result.input_liveness = liveness;
-    const liveOk = liveness !== 'dead';
+    result.input_liveness_by_input = perInput;
+    const liveOk = liveness !== 'dead' && liveness !== 'guarded';
     if (liveness === 'dead') {
       notes.push('the output does not depend on ANY declared input: every input was '
         + 'perturbed and the result never changed. This program ignores its inputs, '
         + 'so re-deriving it proves nothing about them -- a constant dressed as a '
         + 'computation. REFUSED.');
+    } else if (liveness === 'guarded') {
+      notes.push('no declared input was shown to reach the output, and the program '
+        + 'TRAPPED on every perturbation that did not. A program that refuses to run '
+        + 'on anything but its own receipted inputs yields no evidence that those '
+        + 'inputs produced this answer -- the shape of a hardcoded result behind an '
+        + 'equality guard. REFUSED.');
     } else if (liveness === 'indeterminate') {
       notes.push('input-liveness probe hit its budget before proving dependence either '
         + 'way; not treated as a failure');
+    }
+    if (liveness === 'live') {
+      const dark = perInput.map((st, i) => (st === 'live' ? -1 : i)).filter(i => i >= 0);
+      notes.push('input-liveness is EVIDENCE, not proof: perturbing an input moved the '
+        + 'output, which shows dependence but cannot show the program computes the '
+        + 'formula its name claims. Pin an approved program digest (--expect-program) '
+        + 'for that.' + (dark.length ? ` Inputs ${JSON.stringify(dark)} were not shown `
+        + 'to reach the output.' : ''));
     }
 
     // `declared.length` is a JSON integer, so it arrives as a BigInt and `1n === 1`
@@ -179,41 +194,66 @@ function verify(receipt) {
 // on the same "live"/"dead"/"indeterminate" verdict for the same receipt.
 const LIVENESS_DELTAS = [1n, -1n, 7n, -7n, 1000n, -1000n, 1000000n];
 
-/** Does the output depend on the declared inputs? See the Python `_input_liveness`
- * docstring for the full argument. Bounded so it cannot become a DoS amplifier:
- * each perturbation run is capped, and so is the total. Only "dead" -- every input
- * exercised within budget, none moved the outcome -- ever refuses. */
+/** What evidence is there that the output depends on the declared inputs?
+ *
+ * See the Python `_input_liveness` docstring for the full argument. Two things
+ * matter here and must stay identical to it:
+ *
+ *  - A TRAP IS NOT EVIDENCE. This returned 'live' on a trapped perturbation,
+ *    reasoning that the value controls whether an output exists. The attacker
+ *    chooses when to trap, so that let a hardcoded constant behind an equality
+ *    guard (`if inputs == receipted { ok = 1 } ; 1/ok ; output 424242`) pass the
+ *    check it exists to fail. A trap now records 'guarded' -- the program declined
+ *    to run, which says nothing about the output.
+ *  - A 'live' is EVIDENCE, never a semantic guarantee: no finite black-box probe
+ *    can show a program computes the formula its name claims.
+ *
+ * Returns {verdict, perInput}; only 'dead' and 'guarded' refuse, and both are
+ * sound negatives. Bounded so it cannot become a DoS amplifier. */
 function inputLiveness(program, inputs, baseOut, baseSteps) {
   const n = inputs.length;
-  if (n === 0) return 'n/a';
+  if (n === 0) return { verdict: 'n/a', perInput: [] };
 
   const sameOut = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   const perRunCap = Math.min(replay.MAX_STEPS, Math.max(baseSteps, 100000));
   const totalBudget = Math.max(baseSteps * 8, 4000000);
   let spent = 0;
 
+  const perInput = [];
   for (let i = 0; i < n; i++) {
     const original = inputs[i];
+    let state = 'dead';
+    let trapped = false;
+    let exhausted = false;
     for (const d of LIVENESS_DELTAS) {
       const probed = original + d;
       if (probed < replay.INT64_MIN || probed > replay.INT64_MAX) continue;
-      if (spent >= totalBudget) return 'indeterminate';
+      if (spent >= totalBudget) { exhausted = true; break; }
       const trial = inputs.slice();
       trial[i] = probed;
       try {
         const { out, steps } = replay.runCounted(program, trial, perRunCap);
         spent += steps;
-        if (!sameOut(out, baseOut)) return 'live';
+        if (!sameOut(out, baseOut)) { state = 'live'; break; }
       } catch (e) {
         if (!(e instanceof replay.Trap)) throw e;
         spent += perRunCap;
-        // valid int64 in, so a Trap here is the program's own guard/arithmetic: the
-        // value controls whether an output exists at all, which is dependence.
-        return 'live';
+        trapped = true;
       }
     }
+    if (state !== 'live') {
+      state = exhausted ? 'indeterminate' : (trapped ? 'guarded' : 'dead');
+    }
+    perInput.push(state);
   }
-  return 'dead';
+
+  let verdict;
+  if (perInput.includes('live')) verdict = 'live';
+  else if (perInput.includes('indeterminate')) verdict = 'indeterminate';
+  else if (perInput.includes('guarded')) verdict = 'guarded';
+  else verdict = 'dead';
+  return { verdict, perInput };
 }
+
 
 module.exports = { verify, plain };

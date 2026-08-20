@@ -116,7 +116,18 @@ def check(receipt: dict) -> dict:
         out["detail"] = f"signature NOT evaluated - {integrity_detail}"
         return out
 
-    alg = (sig.get("alg") or "").lower()
+    # THE ALGORITHM TOKEN IS EXACT, NOT NORMALIZED. This lowercased before
+    # comparing, so a receipt carrying "ED25519" was accepted HERE while the
+    # producer and the browser verifier -- which both compare the exact token --
+    # called the same bytes unsupported. That is a split-brain: one implementation
+    # verifies what another refuses, over an `alg` value that is itself inside the
+    # signed attribute set, so it is not display formatting to be tidied away.
+    # A protocol identifier has one spelling. Anything else is a different receipt.
+    #
+    # `sig` is attacker-supplied, so `alg` may be any JSON type; comparing without
+    # coercing means a number, object, or null simply is not the token, and no
+    # `.lower()` can raise past a caller this function promises never to raise to.
+    alg = sig.get("alg")
     if alg not in SUPPORTED_ALGS:
         out["detail"] = f"unsupported algorithm {alg!r} - UNVERIFIED, not accepted"
         return out

@@ -119,8 +119,16 @@ function check(receipt) {
     return out;
   }
 
-  const alg = (str(sig, 'alg') || '').toLowerCase();
-  if (!SUPPORTED_ALGS.has(alg)) {
+  // THE ALGORITHM TOKEN IS EXACT, NOT NORMALIZED. This lower-cased before
+  // comparing, so "ED25519" was accepted here and called unsupported by the
+  // producer and the browser verifier, which both compare the exact token. The
+  // value is inside the SIGNED attribute set, so this is not display formatting:
+  // it is one implementation verifying a receipt another refuses. `sig` is
+  // attacker-supplied, so reading it without coercion also means a number,
+  // object, or null simply is not the token rather than throwing past a caller
+  // this function promises never to throw to.
+  const alg = sig.get('alg');
+  if (typeof alg !== 'string' || !SUPPORTED_ALGS.has(alg)) {
     out.detail = `unsupported algorithm '${alg}' - UNVERIFIED, not accepted`;
     return out;
   }
