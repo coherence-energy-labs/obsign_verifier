@@ -57,6 +57,34 @@ close a soundness hole, tighten a bound against denial-of-service — because
 refusing a forgery an old version wrongly accepted is a fix, not a break; it may
 never silently **accept more**.
 
+## Refusals added under the guarantee
+
+Recorded here because the guarantee is asymmetric and this is the direction it
+permits. Each entry made this verifier refuse something an earlier version accepted.
+None changes a rule, adds a spec string, or touches any receipt that verifies today.
+
+**`obsign/replay/1` structural scalars are JSON integers, in both languages.** `mem`,
+`steps`, the `input`/`output` window bounds and every instruction operand must be
+written as an integer literal. The Python reference read a JSON `true` as 1 (`bool`
+subclasses `int` there) and the JavaScript port read a JSON `4.0` as 4 (once parsed, a
+safe-integer Number is indistinguishable from an integer literal unless the parser
+kept the shape — canonical.js does, and the structural check was not consulting it).
+Each implementation loaded programs the other refused, in opposite directions; both
+now refuse both, so the two agree on which programs exist. Programs whose scalars are
+ordinary integers — every program the compiler has emitted, every committed
+conformance vector — are unaffected.
+
+**Graphs v1: a node's verdict covers every envelope supplied for its claim.**
+`signature`, `case`, `env` and `receipt_sha256` are outside the claim, so two
+different documents can index to the same node. `verify_graph` ran the standalone
+ladder on the first copy to arrive and dropped the rest, which made the verdict depend
+on list order; it now runs the ladder on each and takes the conjunction, reporting the
+multiplicity as a `DUPLICATE ENVELOPE` note. That is docs/GRAPHS.md rule 1 — *every
+node verifies standalone* — applied to every receipt actually handed over. A second
+envelope is not itself a fault: two honest attestations of one claim still verify.
+Each node verdict gains an `envelopes` count; a new field is what the guarantee
+permits, and no existing field changes meaning.
+
 ## How the freeze is enforced, not promised
 
 `data/conformance/` — the kernel vectors, the signed producer receipts, the

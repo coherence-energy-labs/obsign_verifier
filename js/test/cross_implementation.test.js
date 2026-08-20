@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { loadReceipt, canonicalSha256, canonicalString, claimOf } = require('../src/canonical.js');
-const { verify } = require('../src/verify.js');
+const { verify, plain } = require('../src/verify.js');
 const replay = require('../src/replay.js');
 
 const REPO = path.resolve(__dirname, '..', '..');
@@ -45,10 +45,12 @@ test('input-liveness agrees with Python: genuine live, constant refused', () => 
   // float. JSON has no BigInt, so serialize through a replacer; loadReceipt turns
   // the numbers back into BigInt via the tagged parser, exactly as in the field.
   const J = (o) => JSON.stringify(o, (k, v) => (typeof v === 'bigint' ? Number(v) : v));
+  // Structural scalars are JSON INTEGERS, so they reach the machine as BigInt too --
+  // a Number in one of them means the JSON carried a float, which has no int64 form.
   const cp = {
-    spec: replay.SPEC, mem: 2048, steps: 50, consts: [38922496n],
-    input: { offset: 1024, length: n }, output: { offset: 0, length: 1 },
-    code: [['LOADC', 0, 0], ['HALT']],
+    spec: replay.SPEC, mem: 2048n, steps: 50n, consts: [38922496n],
+    input: { offset: 1024n, length: BigInt(n) }, output: { offset: 0n, length: 1n },
+    code: [['LOADC', 0n, 0n], ['HALT']],
   };
   const out = replay.run(cp, doc.params.inputs.map(BigInt));
   doc.params.program = cp;
@@ -208,8 +210,10 @@ test('exponential floats canonicalise the way Python repr does', () => {
 
 test('wrapping int64 and truncate-toward-zero match the reference', () => {
   const prog = (code, consts) => ({
-    spec: replay.SPEC, mem: 8, steps: 100, consts,
-    input: { offset: 6, length: 1 }, output: { offset: 0, length: 1 }, code,
+    spec: replay.SPEC, mem: 8n, steps: 100n, consts,
+    input: { offset: 6n, length: 1n }, output: { offset: 0n, length: 1n },
+    // operands are JSON integers, so they arrive as BigInt like every other one
+    code: code.map(([op, ...args]) => [op, ...args.map(BigInt)]),
   });
   const INT64_MAX = 9223372036854775807n;
   const INT64_MIN = -9223372036854775808n;
@@ -252,6 +256,53 @@ test('wrapping int64 and truncate-toward-zero match the reference', () => {
   for (const [a, b, want] of [[-7n, 2n, -3n], [7n, -2n, -3n], [-7n, -2n, 3n], [7n, 2n, 3n]]) {
     const p = prog([['LOADC', 0, 0], ['LOADC', 1, 1], ['DIV', 0, 0, 1], ['HALT']], [a, b]);
     assert.strictEqual(replay.run(p, [0n])[0], want, `${a}/${b}`);
+  }
+});
+
+test('a JSON float in a STRUCTURAL scalar is refused, as the Python reference refuses it', () => {
+  // `mem`, `steps`, the window bounds and every operand are JSON INTEGERS. Python's
+  // `isinstance(4.0, int)` is False, so it refuses `"mem": 4.0`; this file's check was
+  // `Number.isSafeInteger`, and after canonical.js an integer literal is a BigInt while
+  // a float literal is a Number -- so a Number-accepting check admitted the float and
+  // ran the program. Each implementation therefore loaded programs the other refused,
+  // and a forger picks whichever verifier loads the receipt they built.
+  //
+  // These are built as TEXT: `JSON.stringify(4.0)` is "4", so the `.0` a receipt
+  // actually carries cannot be expressed any other way in this language.
+  const SOUND = '{"spec":"obsign/replay/1","mem":4,"steps":8,"consts":[0],'
+    + '"input":{"offset":2,"length":1},"output":{"offset":0,"length":1},"code":[["HALT"]]}';
+  const load = (text) => plain(loadReceipt(text));
+  assert.deepStrictEqual(replay.run(load(SOUND), [0n]), [0n],
+    'the sound program must RUN, or this test passes by refusing everything');
+
+  const floats = [
+    ['mem', '"mem":4', '"mem":4.0'],
+    ['steps', '"steps":8', '"steps":8.0'],
+    ['input.offset', '"input":{"offset":2', '"input":{"offset":2.0'],
+    ['input.length', '"input":{"offset":2,"length":1}', '"input":{"offset":2,"length":1.0}'],
+    ['output.offset', '"output":{"offset":0', '"output":{"offset":0.0'],
+    ['output.length', '"output":{"offset":0,"length":1}', '"output":{"offset":0,"length":1.0}'],
+    ['operand', '[["HALT"]]', '[["MOV",0.0,2],["HALT"]]'],
+    ['jump target', '[["HALT"]]', '[["JMP",1.0],["HALT"]]'],
+  ];
+  for (const [name, from, to] of floats) {
+    const text = SOUND.replace(from, to);
+    assert.notStrictEqual(text, SOUND, `${name}: the substitution did not apply`);
+    assert.throws(() => replay.run(load(text), [0n]), replay.Trap,
+      `${name}: a JSON float must be refused, not read as the integer beside it`);
+  }
+
+  // The other direction, which this implementation always had right and which the
+  // Python reference did not: a JSON boolean is not an integer either.
+  for (const [name, from, to] of [
+    ['mem', '"mem":4,"steps":8', '"mem":true,"steps":8'],
+    ['steps', '"steps":8', '"steps":true'],
+    ['input.offset', '"input":{"offset":2', '"input":{"offset":true'],
+    ['output.length', '"output":{"offset":0,"length":1}', '"output":{"offset":0,"length":true}'],
+  ]) {
+    const text = SOUND.replace(from, to);
+    assert.notStrictEqual(text, SOUND, `${name}: the substitution did not apply`);
+    assert.throws(() => replay.run(load(text), [0n]), replay.Trap, `${name}: bool`);
   }
 });
 

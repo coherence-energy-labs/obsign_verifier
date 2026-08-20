@@ -128,6 +128,20 @@ MAX_STEPS = 50_000_000     # hard ceiling; a program may declare less, never mor
 MAX_CODE = 1 << 16
 
 
+def _struct_int(x: Any) -> bool:
+    """A STRUCTURAL integer: a memory size, a step budget, a window bound.
+
+    `bool` is excluded first because it SUBCLASSES `int` in Python, so a bare
+    `isinstance(x, int)` reads a JSON `true` as 1. js/src/replay.js sees a boolean and
+    refuses, so `{"mem": true}` was a program that loaded in the reference and nowhere
+    else -- the two verifiers disagreeing about which receipts exist, which is the one
+    disagreement this format cannot absorb: a forger hands the receipt to whichever
+    implementation loads it. The value-carrying fields (`consts`, operands, inputs)
+    have always guarded this; the shape fields did not.
+    """
+    return not isinstance(x, bool) and isinstance(x, int)
+
+
 def validate(prog: Any) -> dict:
     """Reject anything malformed BEFORE executing a single instruction.
 
@@ -146,11 +160,11 @@ def validate(prog: Any) -> dict:
             raise Trap(f"program is missing {field!r}")
 
     mem = prog["mem"]
-    if not isinstance(mem, int) or not (1 <= mem <= MAX_MEM):
+    if not _struct_int(mem) or not (1 <= mem <= MAX_MEM):
         raise Trap(f"mem must be an int in 1..{MAX_MEM}")
 
     steps = prog["steps"]
-    if not isinstance(steps, int) or not (1 <= steps <= MAX_STEPS):
+    if not _struct_int(steps) or not (1 <= steps <= MAX_STEPS):
         raise Trap(f"steps must be an int in 1..{MAX_STEPS}")
 
     consts = prog["consts"]
@@ -165,8 +179,8 @@ def validate(prog: Any) -> dict:
             raise Trap(f"consts[{i}] does not fit in int64")
 
     for name, spec in (("input", prog["input"]), ("output", prog["output"])):
-        if (not isinstance(spec, dict) or not isinstance(spec.get("offset"), int)
-                or not isinstance(spec.get("length"), int)):
+        if (not isinstance(spec, dict) or not _struct_int(spec.get("offset"))
+                or not _struct_int(spec.get("length"))):
             raise Trap(f"{name} must be {{offset:int, length:int}}")
         off, ln = spec["offset"], spec["length"]
         if off < 0 or ln < 0 or off + ln > mem:

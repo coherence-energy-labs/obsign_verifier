@@ -101,6 +101,39 @@ def test_booleans_are_not_integers_here():
         validate(prog([["LOADC", 0, 0], ["HALT"]], consts=[True]))
 
 
+#: The same program with ONE structural scalar written as a JSON boolean. Each stays
+#: a program that would validate if that field were the integer `bool` collapses to,
+#: so nothing but the type rule decides the outcome.
+_STRUCTURAL_BOOL = [
+    ("mem", {"mem": True, "input": {"offset": 0, "length": 1},
+             "output": {"offset": 0, "length": 1}}),
+    ("steps", {"steps": True}),
+    ("input.offset", {"input": {"offset": True, "length": 1}}),
+    ("input.length", {"input": {"offset": 2, "length": True}}),
+    ("output.offset", {"output": {"offset": True, "length": 1}}),
+    ("output.length", {"output": {"offset": 0, "length": True}}),
+]
+
+
+@pytest.mark.parametrize("field, over", _STRUCTURAL_BOOL,
+                         ids=[f for f, _ in _STRUCTURAL_BOOL])
+def test_booleans_are_not_integers_in_the_structural_fields_either(field, over):
+    """The constant pool was guarded against `bool`; the machine's SHAPE was not.
+
+    `mem`, `steps` and the two window bounds were checked with a bare
+    `isinstance(x, int)`, which is True for `True`, so `{"mem": true}` loaded here as
+    `mem = 1`. js/src/replay.js sees a JSON boolean and refuses, so these programs
+    existed in one implementation and not the other -- and a receipt only half the
+    verifiers will load is a receipt whose verdict depends on who you hand it to.
+    """
+    p = {"spec": SPEC, "mem": 4, "steps": 8, "consts": [0],
+         "input": {"offset": 2, "length": 1}, "output": {"offset": 0, "length": 1},
+         "code": [["LOADC", 0, 0], ["HALT"]]}
+    p.update(over)
+    with pytest.raises(Trap):
+        validate(p)
+
+
 @pytest.mark.parametrize("mutate,match", [
     (lambda p: p.update(spec="nope"), "unknown program spec"),
     (lambda p: p.update(code=[["NOPE", 0]]), "unknown opcode"),

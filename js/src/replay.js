@@ -73,20 +73,19 @@ const OPS = {
 // is true, so a float was accepted as an integer, and an exact int64 above 2^53 was
 // rejected as "not fitting in int64" after being silently rounded on the way in.
 //
-// Structural fields (mem, steps, operands, offsets) index JS arrays, so they must end
-// as Numbers. Every one is bounded far below 2^53 by MAX_MEM / MAX_STEPS / MAX_CODE,
-// so narrowing them is lossless -- and that is CHECKED below, not assumed. Values
-// (consts, inputs, memory) stay BigInt and are never narrowed.
+// Structural fields (mem, steps, operands, offsets) index JS arrays, so they must be
+// USED as Numbers -- but they must ARRIVE as BigInt like everything else, or a JSON
+// float passes for the integer beside it. Every one is bounded far below 2^53 by
+// MAX_MEM / MAX_STEPS / MAX_CODE, so runCounted's narrowing is lossless -- and that
+// is CHECKED below, not assumed. Values (consts, inputs, memory) are never narrowed.
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
-/** A structural integer: exact as a JS array index, whether it arrived as either type. */
-const isStructInt = (x) => {
-  if (typeof x === 'bigint') return x >= -SAFE && x <= SAFE;
-  return typeof x === 'number' && Number.isSafeInteger(x);
-};
-
-/** Narrow a structural integer to a Number. Lossless for anything isStructInt accepts. */
-const toNum = (x) => (typeof x === 'bigint' ? Number(x) : x);
+/** A structural integer. BigInt ONLY, for the reason `isValueInt` is: a JSON float
+ * arrives here as a Number and `Number.isSafeInteger(4)` cannot tell `4.0` from `4`.
+ * Accepting Numbers accepted `{"mem": 4.0}`, `{"steps": 8.0}` and `["MOV", 0.0, 2]`,
+ * every one of which Python's `isinstance(x, int)` refuses -- programs that loaded
+ * HERE and nowhere else, the mirror image of the reference reading `true` as 1. */
+const isStructInt = (x) => typeof x === 'bigint' && x >= -SAFE && x <= SAFE;
 
 /** A value integer. A Number here means the JSON carried a float, which has no int64 form. */
 const isValueInt = (x) => typeof x === 'bigint';
@@ -103,15 +102,18 @@ function validate(prog) {
   for (const f of ['mem', 'steps', 'code', 'consts', 'input', 'output']) {
     if (!(f in prog)) throw new Trap(`program is missing ${f}`);
   }
-  // Structural fields are narrowed to Numbers HERE, once, after the range check that
-  // proves the narrowing is lossless. Everything below this line may assume Numbers.
-  if (!isStructInt(prog.mem)) throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
-  if (!isStructInt(prog.steps)) throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
-  prog.mem = toNum(prog.mem);
-  prog.steps = toNum(prog.steps);
+  // Nothing is narrowed and written back here, and that is now load-bearing: every
+  // liveness probe calls `validate` again on the SAME program object, and a validator
+  // that rewrote a BigInt field into the Number form its own type check refuses would
+  // pass on the first run and trap on the second. `runCounted` narrows into a local
+  // copy instead, once this has proved the narrowing lossless.
   const { mem, steps, consts, code } = prog;
-  if (mem < 1 || mem > MAX_MEM) throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
-  if (steps < 1 || steps > MAX_STEPS) throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
+  if (!isStructInt(mem) || mem < 1n || mem > BigInt(MAX_MEM)) {
+    throw new Trap(`mem must be an int in 1..${MAX_MEM}`);
+  }
+  if (!isStructInt(steps) || steps < 1n || steps > BigInt(MAX_STEPS)) {
+    throw new Trap(`steps must be an int in 1..${MAX_STEPS}`);
+  }
   if (!Array.isArray(consts) || consts.length > MAX_MEM) throw new Trap('consts must be a list');
 
   consts.forEach((c, i) => {
@@ -129,14 +131,12 @@ function validate(prog) {
     if (spec === null || typeof spec !== 'object' || !isStructInt(spec.offset) || !isStructInt(spec.length)) {
       throw new Trap(`${name} must be {offset:int, length:int}`);
     }
-    spec.offset = toNum(spec.offset);
-    spec.length = toNum(spec.length);
-    if (spec.offset < 0 || spec.length < 0 || spec.offset + spec.length > mem) {
+    if (spec.offset < 0n || spec.length < 0n || spec.offset + spec.length > mem) {
       throw new Trap(`${name} window ${spec.offset}..${spec.offset + spec.length} is outside mem (${mem})`);
     }
   }
   // Every zero-length output would hash the empty string -- a collision by construction.
-  if (prog.output.length === 0) throw new Trap('output length must be > 0');
+  if (prog.output.length === 0n) throw new Trap('output length must be > 0');
 
   if (!Array.isArray(code) || code.length === 0 || code.length > MAX_CODE) {
     throw new Trap(`code must be a non-empty list of at most ${MAX_CODE} instructions`);
@@ -151,20 +151,17 @@ function validate(prog) {
     const [arity, kind] = OPS[op];
     const args = ins.slice(1);
     if (args.length !== arity) throw new Trap(`code[${pc}] ${op} takes ${arity} operand(s), got ${args.length}`);
-    for (let i = 0; i < args.length; i++) {
-      const a = args[i];
+    for (const a of args) {
       if (typeof a === 'boolean' || !isStructInt(a)) throw new Trap(`code[${pc}] ${op} has a non-integer operand`);
-      args[i] = toNum(a);
-      ins[i + 1] = args[i];   // the interpreter indexes `ins` directly
     }
-    const inMem = (a) => a >= 0 && a < mem;
+    const inMem = (a) => a >= 0n && a < mem;
 
     if (kind === 'loadc') {
       if (!inMem(args[0])) throw new Trap(`code[${pc}] ${op} dst ${args[0]} out of range`);
-      if (args[1] < 0 || args[1] >= consts.length) throw new Trap(`code[${pc}] ${op} const index ${args[1]} out of range`);
+      if (args[1] < 0n || args[1] >= BigInt(consts.length)) throw new Trap(`code[${pc}] ${op} const index ${args[1]} out of range`);
     } else if (kind === 'jump' || kind === 'jcc') {
       const target = args[args.length - 1];
-      if (target < 0 || target >= code.length) throw new Trap(`code[${pc}] ${op} jumps to ${target}, outside the program`);
+      if (target < 0n || target >= BigInt(code.length)) throw new Trap(`code[${pc}] ${op} jumps to ${target}, outside the program`);
       for (const a of args.slice(0, -1)) {
         if (!inMem(a)) throw new Trap(`code[${pc}] ${op} register ${a} out of range`);
       }
@@ -172,7 +169,7 @@ function validate(prog) {
       for (const a of args.slice(0, 3)) {
         if (!inMem(a)) throw new Trap(`code[${pc}] ${op} register ${a} out of range`);
       }
-      if (args[3] < 0 || args[3] > 63) throw new Trap(`code[${pc}] MULFX frac ${args[3]} must be 0..63`);
+      if (args[3] < 0n || args[3] > 63n) throw new Trap(`code[${pc}] MULFX frac ${args[3]} must be 0..63`);
     } else if (kind !== 'halt') {
       for (const a of args) {
         if (!inMem(a)) throw new Trap(`code[${pc}] ${op} register ${a} out of range`);
@@ -216,12 +213,17 @@ function run(prog, inputs) {
 function runCounted(prog, inputs, stepCap) {
   validate(prog);
 
-  const mem = new Array(prog.mem).fill(0n);
-  const code = prog.code;
-  const budget = stepCap === undefined ? prog.steps : Math.min(prog.steps, stepCap);
-  const consts = prog.consts.map(BigInt);
+  // Narrowed into locals, leaving the caller's program object untouched. `validate`
+  // has just proved every one of these is a BigInt inside the safe-integer range, so
+  // Number() is lossless here and nowhere else.
+  const declaredSteps = Number(prog.steps);
+  const mem = new Array(Number(prog.mem)).fill(0n);
+  const code = prog.code.map((ins) => [ins[0], ...ins.slice(1).map(Number)]);
+  const budget = stepCap === undefined ? declaredSteps : Math.min(declaredSteps, stepCap);
+  const consts = prog.consts;
 
-  const { offset: inOff, length: inLen } = prog.input;
+  const inOff = Number(prog.input.offset);
+  const inLen = Number(prog.input.length);
   if (inputs.length !== inLen) throw new Trap(`program expects ${inLen} input(s), got ${inputs.length}`);
   inputs.forEach((v, i) => {
     if (typeof v === 'boolean' || !isValueInt(v)) throw new Trap(`input[${i}] is not an integer`);
@@ -291,7 +293,8 @@ function runCounted(prog, inputs, stepCap) {
     }
   }
 
-  const { offset: outOff, length: outLen } = prog.output;
+  const outOff = Number(prog.output.offset);
+  const outLen = Number(prog.output.length);
   return { out: mem.slice(outOff, outOff + outLen), steps };
 }
 
