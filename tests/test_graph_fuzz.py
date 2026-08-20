@@ -160,6 +160,7 @@ def test_multi_output_child_feeds_two_parents_and_two_slices():
 import os
 import shutil
 import subprocess
+import tempfile
 import json as _json
 from pathlib import Path as _Path
 
@@ -196,7 +197,9 @@ def test_fuzzed_graphs_reach_identical_verdicts_in_python_and_javascript():
                           for d, n in g["nodes"].items()},
             }
 
-    tmp = _Path(subprocess.run(["mktemp"], capture_output=True, text=True).stdout.strip())
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    tmp = _Path(name)
     try:
         tmp.write_text(_json.dumps(cases), encoding="utf-8")
         proc = subprocess.run(["node", str(_JS_RUNNER), str(tmp)],

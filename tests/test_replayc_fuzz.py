@@ -17,6 +17,7 @@ import os
 import random
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -224,7 +225,9 @@ def test_random_programs_also_agree_on_the_js_vm():
             except Trap:
                 expected.append(("trap", None))
 
-    tmp = Path(subprocess.run(["mktemp"], capture_output=True, text=True).stdout.strip())
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    tmp = Path(name)
     try:
         tmp.write_text(json.dumps(cases), encoding="utf-8")
         proc = subprocess.run(["node", str(_RUNNER), str(tmp)],
