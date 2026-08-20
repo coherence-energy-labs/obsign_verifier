@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -46,7 +47,9 @@ _BATTERY = [
 
 
 def _run_js(cases: list[dict]) -> list[dict]:
-    tmp = Path(subprocess.run(["mktemp"], capture_output=True, text=True).stdout.strip())
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    tmp = Path(name)
     try:
         tmp.write_text(json.dumps(cases), encoding="utf-8")
         proc = subprocess.run(["node", str(_RUNNER), str(tmp)],
