@@ -151,6 +151,46 @@ def _self_check(quiet: bool) -> int:
     return 1 if (wrong or sig_wrong) else 0
 
 
+def _chain(args) -> int:
+    """Verify the receipts as a graph and report node-by-node, then the chain verdict."""
+    from .graph import verify_graph
+
+    receipts, unreadable = [], []
+    for path in args.receipts:
+        try:
+            receipts.append(load_receipt(path.read_text(encoding="utf-8")))
+        except Exception as exc:
+            unreadable.append(f"{path.name}: {type(exc).__name__}: {exc}")
+    g = verify_graph(receipts)
+
+    if args.json:
+        print(json.dumps({**g, "unreadable": unreadable}, indent=2))
+    elif not args.quiet:
+        for digest in g["order"] or list(g["nodes"]):
+            n = g["nodes"][digest]
+            mark = "VERIFIED" if n["verified"] else " REFUSED"
+            link = ("" if n["links_ok"] is None
+                    else "  links OK" if n["links_ok"] is True
+                    else "  links INCOMPLETE" if n["links_ok"] == "incomplete"
+                    else "  links REFUSED")
+            print(f"  [{mark}] {digest[:16]}..{link}")
+            for note in n["notes"]:
+                print(f"             - {note}")
+        for u in unreadable:
+            print(f"  [ REFUSED ] {u}")
+        for note in g["notes"]:
+            print(f"  ! {note}")
+        for m in g["missing"]:
+            print(f"  ? missing: {m[:16]}.. (referenced but not supplied)")
+        verdict = ("CHAIN VERIFIED - every node re-derived, every link binds"
+                   if g["graph_verified"] and not unreadable
+                   else "CHAIN INCOMPLETE - supply the missing receipts"
+                   if not g["complete"]
+                   else "CHAIN REFUSED")
+        print(f"\n{verdict} ({len(g['nodes'])} node(s), {len(g['roots'])} root(s))")
+    return 0 if (g["graph_verified"] and not unreadable) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="obsign-verify",
@@ -166,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
                          "program (its program_sha256). Turns 'did this re-derive?' "
                          "into 'did this re-derive from the program my validator "
                          "approved?'")
+    ap.add_argument("--chain", action="store_true",
+                    help="verify the given receipts as a GRAPH: every node "
+                         "re-derived, every params.links binding checked value-for-"
+                         "value against the child's re-derived output "
+                         "(docs/GRAPHS.md). Exit 0 only if the whole chain holds.")
     ap.add_argument("--version", action="version", version=f"obsign-verify {__version__}")
     args = ap.parse_args(argv)
 
@@ -173,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
         return _self_check(args.quiet)
     if not args.receipts:
         ap.error("give one or more receipt files, or --self-check")
+
+    if args.chain:
+        return _chain(args)
 
     report, failures = [], 0
     for path in args.receipts:

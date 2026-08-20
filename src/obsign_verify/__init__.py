@@ -9,6 +9,7 @@ producer agrees with itself".
 """
 
 from .canonical import canonical_sha256, claim_of, load_receipt
+from .graph import verify_graph
 from .verify import verify
 
 __all__ = ["verify", "load_receipt", "claim_of", "canonical_sha256", "__version__"]

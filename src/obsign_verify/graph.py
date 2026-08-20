@@ -1,0 +1,234 @@
+"""Verify a GRAPH of receipts -- a supply chain of computation, leaf to root.
+
+docs/GRAPHS.md is the contract; this file only implements it. One receipt proves one
+computation. A set of receipts whose `params.links` bind each parent's input slices
+to other receipts' re-derived output slices proves a pipeline -- and this function is
+what makes that claim checkable by a stranger: every node re-executed, every link
+compared value-for-value against a fresh re-derivation of the child, nothing taken
+from a stated hash that a recomputation could establish instead.
+
+VERDICTS STAY SPLIT AND HONEST. A node can be `verified` (internally true) while its
+`links_ok` is False (it lied about where its inputs came from). A missing child makes
+the graph `incomplete` -- reported with the digest, and spelled differently from
+FORGED in both directions, because "I could not check this" and "this is false" are
+different facts. `graph_verified` is the conjunction: every supplied node verifies,
+every link binds, nothing referenced is missing, no cycles, no digest collisions.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from . import replay as replaymod
+from .canonical import canonical_bytes, canonical_sha256, claim_of
+from .verify import verify
+
+_LINK_FIELDS = ("receipt_sha256", "output_sha256", "src_offset", "length", "dst_offset")
+
+
+def _links_of(receipt: dict) -> list:
+    params = receipt.get("params")
+    if not isinstance(params, dict):
+        return []
+    links = params.get("links")
+    return links if isinstance(links, list) else []
+
+
+def _well_formed_link(ln: Any) -> str | None:
+    """None if LN has the spec'd shape, else the reason it does not."""
+    if not isinstance(ln, dict):
+        return "link is not an object"
+    for f in _LINK_FIELDS:
+        if f not in ln:
+            return f"link is missing {f!r}"
+    for f in ("receipt_sha256", "output_sha256"):
+        if not isinstance(ln[f], str) or len(ln[f]) != 64:
+            return f"link.{f} must be a 64-hex digest"
+    for f in ("src_offset", "length", "dst_offset"):
+        v = ln[f]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            return f"link.{f} must be a non-negative integer"
+    if ln["length"] == 0:
+        return "link.length must be > 0"
+    return None
+
+
+def verify_graph(receipts: list) -> dict:
+    """Verify RECEIPTS individually and transitively. Never raises on hostile input --
+    an exception is not a refusal, on a graph exactly as on a single receipt."""
+    graph_notes: list[str] = []
+    nodes: dict[str, dict] = {}          # digest -> {"receipt", "verified", "links_ok", "notes"}
+    canon_bytes: dict[str, bytes] = {}   # digest -> canonical claim bytes (collision check)
+
+    # ---- index by RECOMPUTED claim hash: a link names content, not a self-description
+    for i, r in enumerate(receipts):
+        if not isinstance(r, dict):
+            graph_notes.append(f"receipts[{i}] is not an object; ignored as a node "
+                               f"(and the graph cannot be green with it supplied)")
+            nodes[f"<non-object #{i}>"] = {"receipt": None, "verified": False,
+                                           "links_ok": None,
+                                           "notes": ["not a JSON object"]}
+            continue
+        try:
+            digest = canonical_sha256(claim_of(r))
+            cbytes = canonical_bytes(claim_of(r))
+        except (ValueError, TypeError) as exc:
+            nodes[f"<uncanonicalisable #{i}>"] = {
+                "receipt": None, "verified": False, "links_ok": None,
+                "notes": [f"claim is not canonicalisable ({type(exc).__name__}: {exc})"]}
+            continue
+        if digest in nodes:
+            if canon_bytes[digest] != cbytes:
+                # two different claims, one hash: that is a SHA-256 collision
+                graph_notes.append(f"COLLISION: two different claims share digest "
+                                   f"{digest[:16]}.. -- refusing the whole graph")
+                nodes[digest]["notes"].append("digest collision")
+                nodes[digest]["links_ok"] = False
+            continue                      # byte-identical duplicate: dedupe silently
+        nodes[digest] = {"receipt": r, "verified": None, "links_ok": None, "notes": []}
+        canon_bytes[digest] = cbytes
+
+    # ---- every supplied node runs the FULL standalone ladder
+    for digest, node in nodes.items():
+        if node["receipt"] is None:
+            continue
+        res = verify(node["receipt"])
+        node["verified"] = bool(res.get("verified"))
+        node["standalone"] = res
+        if not node["verified"]:
+            node["notes"].append("does not verify standalone: "
+                                 + "; ".join(res.get("notes", [])[:2]))
+
+    # ---- re-derive outputs once per node that anything links to
+    _out_cache: dict[str, list | None] = {}
+
+    def outputs_of(digest: str) -> list | None:
+        if digest not in _out_cache:
+            r = nodes[digest]["receipt"]
+            params = r.get("params") if isinstance(r, dict) else None
+            try:
+                _out_cache[digest] = replaymod.run(params["program"], list(params["inputs"]))
+            except Exception:
+                _out_cache[digest] = None    # standalone verify already recorded why
+        return _out_cache[digest]
+
+    # ---- walk the links: cycles, missing children, value binding
+    missing: set[str] = set()
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {d: WHITE for d in nodes}
+    order: list[str] = []                    # children-first finish order
+
+    def check_links(digest: str) -> None:
+        node = nodes[digest]
+        r = node["receipt"]
+        if r is None:
+            return
+        links = _links_of(r)
+        if not links:
+            return
+        node["links_ok"] = True              # until a link says otherwise
+        if r.get("kernel") != replaymod.SPEC:
+            node["links_ok"] = False
+            node["notes"].append("links on a non-replay parent are not supported "
+                                 "in graphs v1 (docs/GRAPHS.md)")
+            return
+        parent_inputs = (r.get("params") or {}).get("inputs")
+        taken: set[int] = set()
+        for ln in links:
+            why = _well_formed_link(ln)
+            if why:
+                node["links_ok"] = False
+                node["notes"].append(why)
+                continue
+            child_digest = ln["receipt_sha256"]
+            if child_digest not in nodes:
+                missing.add(child_digest)
+                if node["links_ok"] is True:
+                    node["links_ok"] = "incomplete"
+                node["notes"].append(f"link target {child_digest[:16]}.. was not "
+                                     f"supplied -- the graph is incomplete, not forged")
+                continue
+            child = nodes[child_digest]
+            if child["receipt"] is not None and child["receipt"].get("kernel") != replaymod.SPEC:
+                node["links_ok"] = False
+                node["notes"].append(f"link target {child_digest[:16]}.. is not an "
+                                     f"obsign/replay/1 receipt (unsupported in v1)")
+                continue
+            d, ln_len, s = ln["dst_offset"], ln["length"], ln["src_offset"]
+            if not isinstance(parent_inputs, list) or d + ln_len > len(parent_inputs):
+                node["links_ok"] = False
+                node["notes"].append(f"link destination {d}..{d + ln_len} is outside "
+                                     f"this receipt's inputs")
+                continue
+            overlap = taken.intersection(range(d, d + ln_len))
+            if overlap:
+                node["links_ok"] = False
+                node["notes"].append(f"link destinations overlap at input {min(overlap)}")
+                continue
+            taken.update(range(d, d + ln_len))
+            child_out = outputs_of(child_digest)
+            if child_out is None:
+                node["links_ok"] = False
+                node["notes"].append(f"link target {child_digest[:16]}.. cannot be "
+                                     f"re-executed, so the link cannot bind")
+                continue
+            if s + ln_len > len(child_out):
+                node["links_ok"] = False
+                node["notes"].append(f"link source {s}..{s + ln_len} is outside the "
+                                     f"child's output (length {len(child_out)})")
+                continue
+            if replaymod.output_sha256(child_out) != ln["output_sha256"]:
+                node["links_ok"] = False
+                node["notes"].append(f"link.output_sha256 does not match the child's "
+                                     f"re-derived output")
+                continue
+            if parent_inputs[d:d + ln_len] != child_out[s:s + ln_len]:
+                node["links_ok"] = False
+                node["notes"].append(
+                    f"inputs[{d}..{d + ln_len}) do not equal the child's re-derived "
+                    f"output[{s}..{s + ln_len}) -- this receipt did NOT consume what "
+                    f"{child_digest[:16]}.. produced")
+
+    def dfs(digest: str) -> None:
+        color[digest] = GREY
+        r = nodes[digest]["receipt"]
+        for ln in _links_of(r) if isinstance(r, dict) else []:
+            child = ln.get("receipt_sha256") if isinstance(ln, dict) else None
+            if child in nodes:
+                if color[child] == GREY:
+                    graph_notes.append(f"CYCLE through {child[:16]}.. -- a receipt "
+                                       f"cannot depend on its own consequence; refused")
+                    nodes[digest]["links_ok"] = False
+                    nodes[child]["links_ok"] = False
+                elif color[child] == WHITE:
+                    dfs(child)
+        color[digest] = BLACK
+        order.append(digest)
+
+    for digest in nodes:
+        check_links(digest)
+    for digest in nodes:
+        if color[digest] == WHITE:
+            dfs(digest)
+
+    # ---- roots: nodes nothing supplied links to (for display; not a verdict input)
+    referenced = {ln.get("receipt_sha256")
+                  for n in nodes.values() if isinstance(n["receipt"], dict)
+                  for ln in _links_of(n["receipt"]) if isinstance(ln, dict)}
+    roots = [d for d in nodes if d not in referenced]
+
+    complete = not missing
+    all_nodes_ok = all(n["verified"] is True for n in nodes.values())
+    all_links_ok = all(n["links_ok"] in (None, True) for n in nodes.values())
+    no_graph_faults = not any("COLLISION" in g or "CYCLE" in g for g in graph_notes)
+    graph_verified = bool(nodes) and complete and all_nodes_ok and all_links_ok and no_graph_faults
+
+    return {
+        "graph_verified": graph_verified,
+        "complete": complete,
+        "missing": sorted(missing),
+        "roots": roots,
+        "order": order,                      # children-first where acyclic
+        "nodes": {d: {"verified": n["verified"], "links_ok": n["links_ok"],
+                      "notes": n["notes"]} for d, n in nodes.items()},
+        "notes": graph_notes,
+    }

@@ -216,4 +216,4 @@ function inputLiveness(program, inputs, baseOut, baseSteps) {
   return 'dead';
 }
 
-module.exports = { verify };
+module.exports = { verify, plain };
