@@ -124,11 +124,57 @@ class While(Stmt):
     pos: Pos
 
 
+@dataclass(frozen=True)
+class For(Stmt):
+    """`for VAR in LO..HI { body }` -- VAR takes LO, LO+1, ..., HI-1 (upper-exclusive).
+
+    Bounds are evaluated ONCE, before the first iteration. VAR is an ordinary scalar:
+    the body may assign it and the assignment affects iteration, because both the
+    machine (which increments the cell) and the interpreter (which re-reads the
+    variable) see the same store."""
+    var: str
+    lo: Expr
+    hi: Expr
+    body: tuple[Stmt, ...]
+    pos: Pos
+
+
+@dataclass(frozen=True)
+class Break(Stmt):
+    pos: Pos
+
+
+@dataclass(frozen=True)
+class Continue(Stmt):
+    pos: Pos
+
+
+@dataclass(frozen=True)
+class Return(Stmt):
+    """Only inside a function, and only as its final statement (tail return)."""
+    expr: Expr
+    pos: Pos
+
+
+@dataclass(frozen=True)
+class FnDecl:
+    """A CLOSED function: its body sees only its parameters and its own `let`s --
+    no globals, no arrays, no inputs. That makes every call a pure int64 -> int64
+    computation (traps aside), which is what lets the compiler inline it and the
+    interpreter execute it natively as two independent lowerings of the same
+    semantics. Recursion (direct or mutual) is rejected: totality by construction,
+    the same property the machine itself is built on."""
+    name: str
+    params: tuple[str, ...]
+    body: tuple[Stmt, ...]           # last statement is the Return
+    pos: Pos
+
+
 # --------------------------------------------------------------------------- program
 @dataclass(frozen=True)
 class ArrayDecl:
     name: str
-    length: int
+    length: int                       # parser may hold an Expr; resolve() makes it int
     pos: Pos
 
 
@@ -140,4 +186,6 @@ class Program:
     outputs: tuple[Expr, ...]        # expressions, in output-window order
     steps: Optional[int] = None      # declared step budget (#steps pragma), or None
     input_array: Optional[ArrayDecl] = None   # `input xs[N];` -- the window as an array
+    functions: tuple[FnDecl, ...] = ()
+    consts: tuple[tuple[str, "Expr"], ...] = ()   # raw `const` decls; emptied by resolve()
     pos: Pos = field(default_factory=lambda: Pos(1, 1))

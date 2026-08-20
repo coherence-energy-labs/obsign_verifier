@@ -33,7 +33,16 @@ def _is_trap_free(e: nodes.Expr) -> bool:
     return isinstance(e, (nodes.IntLit, nodes.Name))
 
 
-def fold_expr(e: nodes.Expr) -> nodes.Expr:
+def fold_expr(e: nodes.Expr, arrays: dict[str, int] | None = None) -> nodes.Expr:
+    """ARRAYS maps array name -> length, so len() folds; None outside a program
+    context (const expressions cannot reference arrays anyway)."""
+    return _fold_expr(e, arrays)
+
+
+def _fold_expr(e: nodes.Expr, arrays: dict[str, int] | None) -> nodes.Expr:
+    def fold_expr(x: nodes.Expr) -> nodes.Expr:   # bind ARRAYS for the recursion below
+        return _fold_expr(x, arrays)
+
     if isinstance(e, (nodes.IntLit, nodes.Name)):
         return e
 
@@ -81,6 +90,11 @@ def fold_expr(e: nodes.Expr) -> nodes.Expr:
         return nodes.Binary(e.op, l, r, e.pos)
 
     if isinstance(e, nodes.Call):
+        if e.fn == "len":
+            arg = e.args[0]
+            if arrays is not None and isinstance(arg, nodes.Name) and arg.ident in arrays:
+                return _lit(arrays[arg.ident], e.pos)
+            return e
         args = tuple(fold_expr(a) for a in e.args)
         lits = [a.value for a in args if isinstance(a, nodes.IntLit)]
         all_lit = len(lits) == len(args)
@@ -106,32 +120,46 @@ def fold_expr(e: nodes.Expr) -> nodes.Expr:
     return e  # pragma: no cover - exhaustive over the AST
 
 
-def fold_stmt(s: nodes.Stmt) -> nodes.Stmt:
+def fold_stmt(s: nodes.Stmt, arrays: dict[str, int] | None = None) -> nodes.Stmt:
+    def fe(e: nodes.Expr) -> nodes.Expr:
+        return _fold_expr(e, arrays)
+
+    def fs(t: nodes.Stmt) -> nodes.Stmt:
+        return fold_stmt(t, arrays)
+
     if isinstance(s, nodes.Let):
-        return nodes.Let(s.name, fold_expr(s.expr), s.pos)
+        return nodes.Let(s.name, fe(s.expr), s.pos)
     if isinstance(s, nodes.Assign):
-        return nodes.Assign(s.name, fold_expr(s.expr), s.pos)
+        return nodes.Assign(s.name, fe(s.expr), s.pos)
     if isinstance(s, nodes.StoreElem):
-        return nodes.StoreElem(s.array, fold_expr(s.index), fold_expr(s.value), s.pos)
+        return nodes.StoreElem(s.array, fe(s.index), fe(s.value), s.pos)
     if isinstance(s, nodes.If):
         # Branches are folded but never REMOVED, even on a constant condition: a `let`
         # in a dead branch still declares its cell, and the not-taken arm costs nothing
         # at run time anyway (it is jumped over).
-        return nodes.If(fold_expr(s.cond),
-                        tuple(fold_stmt(t) for t in s.then),
-                        tuple(fold_stmt(t) for t in s.els), s.pos)
+        return nodes.If(fe(s.cond), tuple(fs(t) for t in s.then),
+                        tuple(fs(t) for t in s.els), s.pos)
     if isinstance(s, nodes.While):
-        return nodes.While(fold_expr(s.cond), tuple(fold_stmt(t) for t in s.body), s.pos)
-    return s  # pragma: no cover
+        return nodes.While(fe(s.cond), tuple(fs(t) for t in s.body), s.pos)
+    if isinstance(s, nodes.For):
+        return nodes.For(s.var, fe(s.lo), fe(s.hi), tuple(fs(t) for t in s.body), s.pos)
+    if isinstance(s, nodes.Return):   # pragma: no cover - inlined away before folding
+        return nodes.Return(fe(s.expr), s.pos)
+    return s   # Break / Continue
 
 
 def fold_program(p: nodes.Program) -> nodes.Program:
+    arrays = {a.name: a.length for a in p.arrays}
+    if p.input_array is not None:
+        arrays[p.input_array.name] = p.input_array.length
     return nodes.Program(
         inputs=p.inputs,
         arrays=p.arrays,
-        body=tuple(fold_stmt(s) for s in p.body),
-        outputs=tuple(fold_expr(e) for e in p.outputs),
+        body=tuple(fold_stmt(s, arrays) for s in p.body),
+        outputs=tuple(_fold_expr(e, arrays) for e in p.outputs),
         steps=p.steps,
         input_array=p.input_array,
+        functions=p.functions,
+        consts=p.consts,
         pos=p.pos,
     )

@@ -40,6 +40,8 @@ class _Gen:
         self.rng = rng
         self.scalars: list[str] = []
         self.arrays: dict[str, int] = {}
+        self.fns: dict[str, int] = {}      # name -> arity
+        self.loop_depth = 0
         self._uid = 0
 
     def _name(self, p: str) -> str:
@@ -58,13 +60,18 @@ class _Gen:
                 return f"{arr}[{self.expr(0)}]"
             return str(r.randint(-8, 300))
         kind = r.random()
-        if kind < 0.55:
+        if kind < 0.5:
             op = r.choice(_BINOPS)
             if op in ("<<", ">>"):
                 return f"({self.expr(depth - 1)} {op} {r.randint(0, 63)})"
             return f"({self.expr(depth - 1)} {op} {self.expr(depth - 1)})"
-        if kind < 0.7:
+        if kind < 0.62:
             return f"(0 - {self.expr(depth - 1)})" if r.random() < 0.5 else f"(~{self.expr(depth - 1)})"
+        if kind < 0.74 and self.fns:
+            # a user-function call: the inliner's lowering vs the oracle's native call
+            name = r.choice(list(self.fns))
+            args = ", ".join(self.expr(depth - 1) for _ in range(self.fns[name]))
+            return f"{name}({args})"
         if kind < 0.85:
             fn = r.choice(["min", "max"])
             return f"{fn}({self.expr(depth - 1)}, {self.expr(depth - 1)})"
@@ -73,6 +80,22 @@ class _Gen:
         if kind < 0.97:
             return f"sel({self.expr(depth - 1)}, {self.expr(depth - 1)}, {self.expr(depth - 1)})"
         return f"mulfx({self.expr(depth - 1)}, {self.expr(depth - 1)}, {self.rng.randint(0, 63)})"
+
+    def fn_decl(self) -> str:
+        """A closed function over its params only: expression-bodied, arithmetic-rich.
+        Its body expression is generated with the scalar pool swapped to the params,
+        so it cannot reference globals (which the typer would reject)."""
+        r = self.rng
+        name = self._name("fx")
+        arity = r.randint(1, 3)
+        params = [self._name("p") for _ in range(arity)]
+        saved_scalars, saved_arrays, saved_fns = self.scalars, self.arrays, self.fns
+        self.scalars, self.arrays = list(params), {}
+        self.fns = dict(saved_fns)          # calls to earlier fns allowed (acyclic)
+        body = self.expr(2)
+        self.scalars, self.arrays, self.fns = saved_scalars, saved_arrays, saved_fns
+        self.fns[name] = arity
+        return f"fn {name}({', '.join(params)}) {{ return {body}; }}"
 
     def stmt(self, depth: int) -> str:
         r = self.rng
@@ -87,24 +110,40 @@ class _Gen:
         if k < 0.75 and self.arrays:
             arr = r.choice(list(self.arrays))
             return f"{arr}[{self.expr(1)}] = {self.expr(2)};"
-        if k < 0.88 and depth > 0:
+        if k < 0.82 and depth > 0:
             body = " ".join(self.stmt(depth - 1) for _ in range(r.randint(1, 2)))
             els = f"else {{ {self.stmt(depth - 1)} }}" if r.random() < 0.5 else ""
             return f"if {self.expr(1)} {{ {body} }} {els}"
-        if depth > 0:
-            # A definitely-terminating loop. The body is generated BEFORE the counter
-            # exists, so nothing in it can assign to the counter -- the loop cannot be
-            # made to run away, which keeps both the VM and the interpreter well under
-            # the step budget and the fuzzer fast and unambiguous.
-            bound = r.randint(0, 6)
+        if k < 0.9 and self.loop_depth > 0:
+            # break/continue somewhere inside a loop -- usually guarded, so the loop
+            # still exercises later iterations on most paths
+            kw = r.choice(["break", "continue"])
+            return f"if {self.expr(1)} {{ {kw}; }}"
+        if depth > 0 and r.random() < 0.5:
+            # a for loop over a small constant range; break/continue may appear inside
+            v = self._name("f")
+            self.scalars.append(v)
+            self.loop_depth += 1
             body = " ".join(self.stmt(depth - 1) for _ in range(r.randint(1, 2)))
+            self.loop_depth -= 1
+            return f"for {v} in {r.randint(-2, 2)}..{r.randint(0, 6)} {{ {body} }}"
+        if depth > 0:
+            # A definitely-terminating while. The counter increments FIRST, so a
+            # generated `continue` in the body cannot skip it and spin forever; and the
+            # body is generated BEFORE the counter exists, so nothing in it can assign
+            # the counter either. Terminating by construction, break/continue included.
+            bound = r.randint(0, 6)
+            self.loop_depth += 1
+            body = " ".join(self.stmt(depth - 1) for _ in range(r.randint(1, 2)))
+            self.loop_depth -= 1
             c = self._name("k")
             self.scalars.append(c)
-            return f"let {c} = 0; while {c} < {bound} {{ {body} {c} = {c} + 1; }}"
+            return f"let {c} = 0; while {c} < {bound} {{ {c} = {c} + 1; {body} }}"
         return f"let {self._name('t')} = {self.expr(1)};"
 
     def program(self) -> tuple[str, int]:
         r = self.rng
+        fn_decls = "\n".join(self.fn_decl() for _ in range(r.randint(0, 2)))
         n_in = r.randint(1, 4)
         self.scalars = [self._name("in") for _ in range(n_in)]
         header_inputs = "input " + ", ".join(self.scalars) + ";\n"
@@ -116,7 +155,7 @@ class _Gen:
             arr_decls += f"arr {an}[{ln}];\n"
         body = "\n".join(self.stmt(2) for _ in range(r.randint(1, 6)))
         outs = ", ".join(self.expr(2) for _ in range(r.randint(1, 3)))
-        src = f"#steps 300000\n{header_inputs}{arr_decls}{body}\noutput {outs};\n"
+        src = f"#steps 300000\n{fn_decls}\n{header_inputs}{arr_decls}{body}\noutput {outs};\n"
         return src, n_in
 
 

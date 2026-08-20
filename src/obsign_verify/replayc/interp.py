@@ -24,6 +24,19 @@ class InterpError(Trap):
     machine's refusals catch the oracle's identically."""
 
 
+class _BreakSig(Exception):
+    pass
+
+
+class _ContinueSig(Exception):
+    pass
+
+
+class _ReturnSig(Exception):
+    def __init__(self, value: int):
+        self.value = value
+
+
 def _as_bool(v: int) -> bool:
     return v != 0
 
@@ -45,6 +58,7 @@ class Interpreter:
         self.budget = step_budget
         self.steps = 0
         self.f = _Frame()
+        self.fns = {fn.name: fn for fn in prog.functions}
 
     # ---- driver ----
     def run(self, inputs: list[int]) -> list[int]:
@@ -102,7 +116,34 @@ class Interpreter:
         elif isinstance(s, nodes.While):
             while _as_bool(self._eval(s.cond)):
                 self._tick()
-                self._exec_block(s.body)
+                try:
+                    self._exec_block(s.body)
+                except _ContinueSig:
+                    continue
+                except _BreakSig:
+                    break
+        elif isinstance(s, nodes.For):
+            # Bounds are evaluated ONCE. The loop variable is an ordinary scalar the
+            # body may assign; the increment RE-READS it -- matching the machine,
+            # which increments the variable's cell.
+            lo = self._eval(s.lo)
+            hi = self._eval(s.hi)
+            self.f.vars[s.var] = lo
+            while self.f.vars[s.var] < hi:
+                self._tick()
+                try:
+                    self._exec_block(s.body)
+                except _BreakSig:
+                    break
+                except _ContinueSig:
+                    pass
+                self.f.vars[s.var] = _wrap(self.f.vars[s.var] + 1)
+        elif isinstance(s, nodes.Break):
+            raise _BreakSig()
+        elif isinstance(s, nodes.Continue):
+            raise _ContinueSig()
+        elif isinstance(s, nodes.Return):
+            raise _ReturnSig(self._eval(s.expr))
         else:  # pragma: no cover - the parser produces no other statement
             raise InterpError(f"unknown statement {type(s).__name__}")
 
@@ -177,6 +218,31 @@ class Interpreter:
         raise InterpError(f"unknown binary {op!r}")  # pragma: no cover
 
     def _call(self, e: nodes.Call) -> int:
+        if e.fn in self.fns:
+            # NATIVE call execution -- deliberately NOT the compiler's inliner. The
+            # oracle gives function semantics its own independent implementation (a
+            # fresh closed frame, run the body, catch the return), so an inliner bug
+            # is a divergence the differential suite catches, not a shared error.
+            fn = self.fns[e.fn]
+            args = [self._eval(x) for x in e.args]
+            saved = self.f
+            self.f = _Frame()
+            for p, v in zip(fn.params, args):
+                self.f.vars[p] = v
+            try:
+                self._exec_block(fn.body)
+            except _ReturnSig as r:
+                return r.value
+            finally:
+                self.f = saved
+            raise InterpError(f"fn {e.fn!r} fell off the end without returning"
+                              )  # pragma: no cover - typer enforces a tail return
+        if e.fn == "len":
+            arg = e.args[0]
+            assert isinstance(arg, nodes.Name)  # typer guarantees
+            if arg.ident in self.f.arrays:
+                return len(self.f.arrays[arg.ident])
+            raise InterpError(f"len() of unknown array {arg.ident!r}")  # pragma: no cover
         a = [self._eval(x) for x in e.args]
         if e.fn == "min":
             return a[0] if a[0] < a[1] else a[1]

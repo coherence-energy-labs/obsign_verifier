@@ -49,11 +49,12 @@ from typing import NoReturn
 from . import nodes
 from .nodes import Pos
 
-KEYWORDS = {"input", "output", "let", "if", "else", "while", "arr"}
-BUILTINS = {"min", "max", "abs", "sel", "mulfx"}
+KEYWORDS = {"input", "output", "let", "if", "else", "while", "arr",
+            "fn", "return", "for", "in", "break", "continue", "const"}
+BUILTINS = {"min", "max", "abs", "sel", "mulfx", "len"}
 
 # Longest-match first so '<<' beats '<' and '<=' beats '<'.
-_SYMBOLS = ["<<", ">>", "<=", ">=", "==", "!=", "|", "^", "&", "<", ">",
+_SYMBOLS = ["<<", ">>", "<=", ">=", "==", "!=", "..", "|", "^", "&", "<", ">",
             "+", "-", "*", "/", "%", "~", "=", "(", ")", "[", "]", "{", "}", ",", ";"]
 
 
@@ -177,15 +178,25 @@ class Parser:
         arrays: list[nodes.ArrayDecl] = []
         outputs: list[nodes.Expr] = []
         body: list[nodes.Stmt] = []
+        functions: list[nodes.FnDecl] = []
+        consts: list[tuple[str, nodes.Expr]] = []
         input_array: nodes.ArrayDecl | None = None
         seen_output = False
         while not self._at("eof"):
             if self._at("kw", "input"):
-                if body or arrays or inputs or input_array is not None:
-                    self._err("`input` must be declared once, before any statement or array")
+                if body or inputs or input_array is not None:
+                    self._err("`input` must be declared once, before any statement")
                 input_array = self._parse_input(inputs)
             elif self._at("kw", "arr"):
                 arrays.append(self._parse_array())
+            elif self._at("kw", "fn"):
+                functions.append(self._parse_fn())
+            elif self._at("kw", "const"):
+                t = self._next()
+                name = self._eat("ident").text
+                self._eat("sym", "=")
+                consts.append((name, self._parse_expr()))
+                self._eat("sym", ";")
             elif self._at("kw", "output"):
                 self._parse_output(outputs)
                 seen_output = True
@@ -197,15 +208,30 @@ class Parser:
             self._err("program has no `output` -- a receipt with nothing to hash is a collision")
         pos = self.toks[0].pos
         return nodes.Program(tuple(inputs), tuple(arrays), tuple(body), tuple(outputs),
-                             steps, input_array, pos)
+                             steps, input_array, tuple(functions), tuple(consts), pos)
+
+    def _parse_fn(self) -> nodes.FnDecl:
+        t = self._eat("kw", "fn")
+        name = self._eat("ident").text
+        self._eat("sym", "(")
+        params: list[str] = []
+        if not self._at("sym", ")"):
+            params.append(self._eat("ident").text)
+            while self._at("sym", ","):
+                self._next()
+                params.append(self._eat("ident").text)
+        self._eat("sym", ")")
+        body = self._parse_block()
+        return nodes.FnDecl(name, tuple(params), body, t.pos)
 
     def _parse_input(self, inputs: list[str]) -> nodes.ArrayDecl | None:
-        """Either `input a, b, c;` (scalars) or `input xs[N];` (the window as an array)."""
+        """Either `input a, b, c;` (scalars) or `input xs[N];` (the window as an array).
+        The length may be any const-expression; resolve() reduces it to an int."""
         self._eat("kw", "input")
         first = self._eat("ident")
         if self._at("sym", "["):
             self._next()
-            length = self._eat("int").value
+            length = self._parse_expr()
             self._eat("sym", "]")
             self._eat("sym", ";")
             return nodes.ArrayDecl(first.text, length, first.pos)
@@ -220,7 +246,7 @@ class Parser:
         t = self._eat("kw", "arr")
         name = self._eat("ident").text
         self._eat("sym", "[")
-        length = self._eat("int").value
+        length = self._parse_expr()      # a const-expression; resolve() makes it an int
         self._eat("sym", "]")
         self._eat("sym", ";")
         return nodes.ArrayDecl(name, length, t.pos)
@@ -267,6 +293,28 @@ class Parser:
             cond = self._parse_expr()
             body = self._parse_block()
             return nodes.While(cond, body, t.pos)
+        if t.kind == "kw" and t.text == "for":
+            self._next()
+            var = self._eat("ident").text
+            self._eat("kw", "in")
+            lo = self._parse_expr()
+            self._eat("sym", "..")
+            hi = self._parse_expr()
+            body = self._parse_block()
+            return nodes.For(var, lo, hi, body, t.pos)
+        if t.kind == "kw" and t.text == "break":
+            self._next()
+            self._eat("sym", ";")
+            return nodes.Break(t.pos)
+        if t.kind == "kw" and t.text == "continue":
+            self._next()
+            self._eat("sym", ";")
+            return nodes.Continue(t.pos)
+        if t.kind == "kw" and t.text == "return":
+            self._next()
+            e = self._parse_expr()
+            self._eat("sym", ";")
+            return nodes.Return(e, t.pos)
         if t.kind == "ident":
             name = self._next().text
             if self._at("sym", "["):
@@ -335,6 +383,17 @@ class Parser:
                 idx = self._parse_expr()
                 self._eat("sym", "]")
                 return nodes.Index(t.text, idx, t.pos)
+            if self._at("sym", "("):
+                # a user-function call; the typer decides whether the name exists
+                self._next()
+                args: list[nodes.Expr] = []
+                if not self._at("sym", ")"):
+                    args.append(self._parse_expr())
+                    while self._at("sym", ","):
+                        self._next()
+                        args.append(self._parse_expr())
+                self._eat("sym", ")")
+                return nodes.Call(t.text, tuple(args), t.pos)
             return nodes.Name(t.text, t.pos)
         self._err(f"expected an expression, got {t.text or t.kind!r}")
 

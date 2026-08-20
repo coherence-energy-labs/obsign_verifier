@@ -46,8 +46,12 @@ __all__ = [
 
 
 def parse_program(text: str) -> Program:
-    """Source -> checked AST. Raises ParseError or TypeError with a source position."""
-    ast = frontend.parse(text)
+    """Source -> resolved, checked AST. Raises ParseError, ResolveError or TypeError
+    with a source position. This is the LAST shared step between the two paths:
+    everything after it is either compile-side (inline -> fold -> generate) or
+    oracle-side (direct evaluation, with native function calls), never both."""
+    from .resolve import resolve
+    ast = resolve(frontend.parse(text))
     typer.check(ast)
     return ast
 
@@ -55,12 +59,14 @@ def parse_program(text: str) -> Program:
 def compile_source(text: str) -> dict:
     """Source -> a validated `obsign/replay/1` program dict.
 
-    The pipeline is parse -> check -> FOLD -> generate. Folding and code generation
-    run only here, on the compile path; interpret_source evaluates the raw checked
-    tree. The differential suite compares the two, so an optimizer bug shows up as a
-    divergence instead of being shared by both sides."""
+    The pipeline is parse -> resolve -> check -> INLINE -> FOLD -> generate. Inlining,
+    folding and code generation run only here; interpret_source evaluates the checked
+    tree directly, executing calls natively in a fresh frame. The differential suite
+    compares the two, so a bug in any compile-side pass shows up as a divergence
+    instead of being shared by both sides."""
     from .fold import fold_program
-    return codegen.generate(fold_program(parse_program(text)))
+    from .inline import inline_program
+    return codegen.generate(fold_program(inline_program(parse_program(text))))
 
 
 def run_source(text: str, inputs: list[int]) -> list[int]:

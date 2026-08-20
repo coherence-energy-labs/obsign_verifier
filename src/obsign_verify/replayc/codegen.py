@@ -73,6 +73,18 @@ class _Const:
         self.value = value
 
 
+class _LoopCtx:
+    """Where `break` and `continue` jump for the innermost enclosing loop. For a
+    `while`, continue re-evaluates the condition; for a `for`, it lands on the
+    increment -- desugaring `for` to `while` naively would send continue past the
+    increment and spin forever, which is why For is a real node all the way down."""
+    __slots__ = ("brk", "cont")
+
+    def __init__(self, brk: _Label, cont: _Label):
+        self.brk = brk
+        self.cont = cont
+
+
 class Codegen:
     def __init__(self, prog: nodes.Program):
         self.prog = prog
@@ -148,13 +160,18 @@ class Codegen:
                 self.scalar[name] = self._alloc()
         for arr in self.prog.arrays:
             self.array[arr.name] = (self._alloc(arr.length), arr.length)
+        # each `for` gets a dedicated cell for its upper bound: evaluated once, it must
+        # survive across iterations, so it cannot live in the per-statement temp region
+        self._for_hi: dict[int, int] = {}
+        for node in _for_nodes(self.prog):
+            self._for_hi[id(node)] = self._alloc()
         self._temp_base = self._next
         self._temp_ptr = self._temp_base
         self._temp_hi = self._temp_base
 
         for s in self.prog.body:
             self._reset_temps()
-            self._stmt(s)
+            self._stmt(s, None)
         for i, e in enumerate(self.prog.outputs):
             self._reset_temps()
             c = self._expr(e, want=out_off + i)
@@ -206,7 +223,7 @@ class Codegen:
         return program
 
     # ---- statements ----
-    def _stmt(self, s: nodes.Stmt) -> None:
+    def _stmt(self, s: nodes.Stmt, loop: _LoopCtx | None) -> None:
         if isinstance(s, (nodes.Let, nodes.Assign)):
             dst = self.scalar[s.name]
             c = self._expr(s.expr, want=dst)
@@ -238,23 +255,58 @@ class Codegen:
             end_l = self._label("end")
             self._emit("JMPZ", cond, else_l)
             for st in s.then:
-                self._stmt(st)
+                self._stmt(st, loop)
             self._emit("JMP", end_l)
             self._place(else_l)
             for st in s.els:
-                self._stmt(st)
+                self._stmt(st, loop)
             self._place(end_l)
         elif isinstance(s, nodes.While):
             top = self._label("while")
             end = self._label("endwhile")
+            inner = _LoopCtx(brk=end, cont=top)   # continue re-evaluates the condition
             self._place(top)
             self._reset_temps()
             cond = self._expr(s.cond)
             self._emit("JMPZ", cond, end)
             for st in s.body:
-                self._stmt(st)
+                self._stmt(st, inner)
             self._emit("JMP", top)
             self._place(end)
+        elif isinstance(s, nodes.For):
+            var = self.scalar[s.var]
+            hi = self._for_hi[id(s)]
+            # bounds evaluated ONCE, before the first iteration -- hi into its
+            # dedicated cell so it survives the per-iteration temp reset
+            lo_c = self._expr(s.lo, want=var)
+            if lo_c != var:
+                self._emit("MOV", var, lo_c)
+            hi_c = self._expr(s.hi, want=hi)
+            if hi_c != hi:
+                self._emit("MOV", hi, hi_c)
+            top = self._label("for")
+            incr = self._label("forincr")
+            end = self._label("endfor")
+            inner = _LoopCtx(brk=end, cont=incr)  # continue lands ON the increment
+            self._place(top)
+            self._reset_temps()
+            t = self._temp()
+            self._emit("LT", t, var, hi)
+            self._emit("JMPZ", t, end)
+            for st in s.body:
+                self._stmt(st, inner)
+            self._place(incr)
+            self._emit("ADD", var, var, self._cellc(1))
+            self._emit("JMP", top)
+            self._place(end)
+        elif isinstance(s, nodes.Break):
+            if loop is None:  # pragma: no cover - typer rejects
+                raise CodegenError("break outside a loop")
+            self._emit("JMP", loop.brk)
+        elif isinstance(s, nodes.Continue):
+            if loop is None:  # pragma: no cover - typer rejects
+                raise CodegenError("continue outside a loop")
+            self._emit("JMP", loop.cont)
         else:  # pragma: no cover
             raise CodegenError(f"unknown statement {type(s).__name__}")
 
@@ -298,6 +350,11 @@ class Codegen:
         raise CodegenError(f"unknown expression {type(e).__name__}")  # pragma: no cover
 
     def _call(self, e: nodes.Call, want: int | None):
+        if e.fn == "len":
+            arg = e.args[0]
+            assert isinstance(arg, nodes.Name)   # typer guarantees
+            _, length = self.array[arg.ident]
+            return self._cellc(length)
         if e.fn in ("min", "max"):
             a = self._expr(e.args[0])
             b = self._expr(e.args[1])
@@ -323,7 +380,9 @@ class Codegen:
             dst = want if want is not None else self._temp()
             self._emit("MULFX", dst, a, b, frac)
             return dst
-        raise CodegenError(f"unknown builtin {e.fn!r}")  # pragma: no cover
+        # a user function reaching codegen means the inliner did not run -- a pipeline
+        # bug, not a program bug, so it fails loudly at build time
+        raise CodegenError(f"internal: call to {e.fn!r} survived inlining")
 
     # ---- helpers ----
     def _addr(self, idx_cell, base: int):
@@ -355,16 +414,19 @@ class Codegen:
 
 
 def _scalar_names(prog: nodes.Program) -> list[str]:
-    """Every variable name introduced by a `let`, in first-seen order, so the memory
-    map -- and therefore the emitted program -- is deterministic."""
+    """Every variable name introduced by a `let` or a `for`, in first-seen order, so
+    the memory map -- and therefore the emitted program -- is deterministic."""
     seen: list[str] = []
     seen_set: set[str] = set()
 
+    def add(name: str) -> None:
+        if name not in seen_set:
+            seen_set.add(name)
+            seen.append(name)
+
     def visit_stmt(s: nodes.Stmt) -> None:
         if isinstance(s, nodes.Let):
-            if s.name not in seen_set:
-                seen_set.add(s.name)
-                seen.append(s.name)
+            add(s.name)
         elif isinstance(s, nodes.If):
             for st in s.then:
                 visit_stmt(st)
@@ -373,10 +435,36 @@ def _scalar_names(prog: nodes.Program) -> list[str]:
         elif isinstance(s, nodes.While):
             for st in s.body:
                 visit_stmt(st)
+        elif isinstance(s, nodes.For):
+            add(s.var)
+            for st in s.body:
+                visit_stmt(st)
 
     for s in prog.body:
         visit_stmt(s)
     return seen
+
+
+def _for_nodes(prog: nodes.Program) -> list[nodes.For]:
+    """Every For node, in the emission order codegen will meet them, so each one's
+    dedicated upper-bound cell is allocated deterministically."""
+    out: list[nodes.For] = []
+
+    def visit(s: nodes.Stmt) -> None:
+        if isinstance(s, nodes.If):
+            for st in s.then + s.els:
+                visit(st)
+        elif isinstance(s, nodes.While):
+            for st in s.body:
+                visit(st)
+        elif isinstance(s, nodes.For):
+            out.append(s)
+            for st in s.body:
+                visit(st)
+
+    for s in prog.body:
+        visit(s)
+    return out
 
 
 def generate(prog: nodes.Program) -> dict:
