@@ -33,8 +33,27 @@ const isObj = (x) => x !== null && typeof x === 'object' && x.__obj instanceof M
 
 class JsonError extends Error {}
 
+// WIRE-FORMAT LIMITS -- the same table as src/obsign_verify/canonical.py.
+//
+// "Valid JSON" is not one thing across languages, and every place two parsers
+// disagree about what LOADS is a place one implementation verifies a document the
+// other cannot read. Two such splits were measured against Python: a 5000-digit
+// integer literal parsed here as an unbounded BigInt and was refused there
+// (CPython caps decimal integer conversion at 4300 digits), and 2000-level nesting
+// parsed here and raised RecursionError there. Same class as the NaN / 1e400
+// divergence already closed, same fix: state the limits and apply them identically.
+//
+// Duplicate object members are refused rather than resolved. Last-value-wins is a
+// parser convention, not a guarantee, and downstream readers do not all share it.
+const MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
+const MAX_DEPTH = 32;
+const MAX_MEMBERS_PER_OBJECT = 1024;
+const MAX_ARRAY_LENGTH = 1 << 20;
+const MAX_STRING_BYTES = 65536;
+const MAX_INT_DIGITS = 4300;      // exactly CPython's default, so both sides agree
+
 class Parser {
-  constructor(s) { this.s = s; this.i = 0; }
+  constructor(s) { this.s = s; this.i = 0; this.depth = 0; }
 
   err(m) { throw new JsonError(`${m} at offset ${this.i}`); }
 
@@ -62,9 +81,10 @@ class Parser {
 
   parseObject() {
     const out = new Map();
+    if (++this.depth > MAX_DEPTH) this.err(`nesting deeper than ${MAX_DEPTH}`);
     this.i++;
     this.skipWs();
-    if (this.s[this.i] === '}') { this.i++; return { __obj: out }; }
+    if (this.s[this.i] === '}') { this.i++; this.depth--; return { __obj: out }; }
     for (;;) {
       this.skipWs();
       if (this.s[this.i] !== '"') this.err('expected a string key');
@@ -72,24 +92,34 @@ class Parser {
       this.skipWs();
       if (this.s[this.i] !== ':') this.err('expected :');
       this.i++;
+      if (out.has(k)) {
+        this.err(`duplicate object member ${JSON.stringify(k)}: last-value-wins is a `
+          + 'parser convention, not a guarantee, and two readers may disagree about '
+          + 'which value this document contains');
+      }
+      if (out.size >= MAX_MEMBERS_PER_OBJECT) {
+        this.err(`object has more than ${MAX_MEMBERS_PER_OBJECT} members`);
+      }
       out.set(k, this.parseValue());
       this.skipWs();
       if (this.s[this.i] === ',') { this.i++; continue; }
-      if (this.s[this.i] === '}') { this.i++; return { __obj: out }; }
+      if (this.s[this.i] === '}') { this.i++; this.depth--; return { __obj: out }; }
       this.err('expected , or }');
     }
   }
 
   parseArray() {
     const out = [];
+    if (++this.depth > MAX_DEPTH) this.err(`nesting deeper than ${MAX_DEPTH}`);
     this.i++;
     this.skipWs();
-    if (this.s[this.i] === ']') { this.i++; return out; }
+    if (this.s[this.i] === ']') { this.i++; this.depth--; return out; }
     for (;;) {
+      if (out.length >= MAX_ARRAY_LENGTH) this.err(`array longer than ${MAX_ARRAY_LENGTH}`);
       out.push(this.parseValue());
       this.skipWs();
       if (this.s[this.i] === ',') { this.i++; continue; }
-      if (this.s[this.i] === ']') { this.i++; return out; }
+      if (this.s[this.i] === ']') { this.i++; this.depth--; return out; }
       this.err('expected , or ]');
     }
   }
@@ -152,12 +182,20 @@ class Parser {
       if (!Number.isFinite(f)) this.err(`non-finite float literal ${lit}`);
       return mkFloat(f);
     }
+    // A literal CPython refuses to convert must not build a BigInt here, or the
+    // same bytes load in JavaScript and are refused in Python.
+    const digits = lit.replace(/^-/, '').length;
+    if (digits > MAX_INT_DIGITS) this.err(`integer with more than ${MAX_INT_DIGITS} digits`);
     return mkInt(BigInt(lit));
   }
 }
 
 /** Parse receipt TEXT, preserving the int/float distinction. */
 function loadReceipt(text) {
+  // Cheapest refusal first: everything below walks the document.
+  if (Buffer.byteLength(text, 'utf8') > MAX_RECEIPT_BYTES) {
+    throw new JsonError(`receipt larger than ${MAX_RECEIPT_BYTES} bytes`);
+  }
   const p = new Parser(text);
   const v = p.parseValue();
   p.skipWs();

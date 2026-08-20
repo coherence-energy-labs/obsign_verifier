@@ -153,6 +153,31 @@ def _scaled(value: float, scale: int, name: str) -> int:
     return scaled
 
 
+def _exact_int(params, key, default=None):
+    """Read an integer field that must ALREADY be an integer.
+
+    `int(p["grid"])` REPAIRS its input: 3.9 becomes 3, "3" becomes 3, and True
+    becomes 1 because bool subclasses int in Python. A verifier interprets bytes;
+    it does not repair them. Canonical JSON writes `3` and `3.0` differently and
+    they hash differently, so a float here is a real wire distinction -- silently
+    reading both as the same computation is how one implementation's "verified"
+    quietly stops meaning what another's does. The replay VM already refuses a
+    float where an integer is required; this is the fixed-kernel path catching up.
+    """
+    if key not in params:
+        if default is None:
+            raise ValueError(f"params are malformed: missing {key!r}")
+        return default
+    v = params[key]
+    # bool first: isinstance(True, int) is True, and `steps: true` is not a count.
+    if isinstance(v, bool) or type(v) is not int:
+        raise ValueError(
+            f"params are malformed: {key!r} must be a JSON integer, got "
+            f"{type(v).__name__} ({v!r}) -- a verifier interprets values, it does "
+            f"not coerce them")
+    return v
+
+
 def validate_params(p: dict) -> dict:
     """Refuse a tau_field_fixed param block that would exhaust the verifier or leave
     the int64 envelope, BEFORE a single cell is allocated. Raises ValueError with a
@@ -172,9 +197,9 @@ def validate_params(p: dict) -> dict:
     if not isinstance(p, dict):
         raise ValueError("params must be an object")
     try:
-        n = int(p["grid"])
-        steps = int(p["steps"])
-        frac_bits = int(p.get("frac_bits", 24))
+        n = _exact_int(p, "grid")
+        steps = _exact_int(p, "steps")
+        frac_bits = _exact_int(p, "frac_bits", 24)
         sources = p["sources"]
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"tau_field_fixed params are malformed: {e}") from e
