@@ -267,3 +267,37 @@ def test_no_program_without_output_is_accepted():
 def test_over_large_literal_is_rejected():
     with pytest.raises(TypeError):
         compile_source(f"output {1 << 63};")        # INT64_MAX+1
+
+
+def test_the_full_open_loop_author_compile_verify():
+    """The whole reason this compiler ships in the verifier: a program written in RL,
+    compiled here, assembled into a receipt, is then VERIFIED by the verifier's own
+    verify() -- integrity, re-derivation and input-liveness -- with no producer and no
+    private toolchain anywhere in the chain. This is the claim, executed end to end."""
+    from obsign_verify import canonical_sha256, claim_of, verify
+    from obsign_verify.replay import program_sha256
+
+    inputs = [4, 18038863, 1932735283, 1250000000, 133143986, 2362232013,
+              320000000, 2061584302, 3092376453, 85000000, 3865471, 1717986918, 4800000000]
+    prog = compile_source(CECL_SRC)
+    out = run_source(CECL_SRC, inputs)
+
+    claim = {
+        "spec": "obsign/receipt/v1",
+        "kernel": "obsign/replay/1",
+        "params": {"program": prog, "program_sha256": program_sha256(prog), "inputs": inputs},
+        "output": {"sha256": output_sha256(out), "length": len(out), "dtype": "int64"},
+    }
+    receipt = dict(claim, receipt_sha256=canonical_sha256(claim_of(claim)))
+
+    res = verify(receipt)
+    assert res["integrity"] is True, res["notes"]
+    assert res["reproduced"] is True, res["notes"]
+    assert res["input_liveness"] == "live", res["notes"]
+    assert res["verified"] is True, res["notes"]
+
+    # and tampering the declared output makes the SAME verifier refuse it
+    forged = dict(receipt)
+    forged_claim = dict(claim, output=dict(claim["output"], sha256="0" * 64))
+    forged = dict(forged_claim, receipt_sha256=canonical_sha256(claim_of(forged_claim)))
+    assert verify(forged)["verified"] is False
