@@ -88,6 +88,78 @@ def test_receipt_order_and_duplicates_do_not_matter():
     assert len(g["nodes"]) == 4                            # byte-identical dupe deduped
 
 
+def _re_envelope(receipt: dict, **envelope) -> dict:
+    """A copy of RECEIPT carrying different NON-CLAIM fields.
+
+    `signature`, `case`, `env` and `receipt_sha256` are all excluded from the claim,
+    so this is a different document with the same claim -- and therefore the same
+    recomputed digest, which is what the graph indexes by.
+    """
+    out = copy.deepcopy(receipt)
+    out.update(envelope)
+    assert canonical_sha256(claim_of(out)) == canonical_sha256(claim_of(receipt)), \
+        "the re-envelope must not move the claim digest, or it proves nothing"
+    return out
+
+
+#: A well-formed Ed25519 public key (RFC 8032 §7.1) under a signature nobody made, so
+#: the refusal comes from the crypto itself rather than from a malformed field -- and
+#: it comes whether or not `cryptography` is installed, since "I cannot check this"
+#: is a refusal here too.
+_FORGED_SIGNATURE = {
+    "spec": "obsign/signature/v2", "alg": "ed25519", "signer": "Desk A",
+    "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "sig": "00" * 64, "binds": [], "binds_sha256": None,
+}
+
+
+def test_a_hostile_re_envelope_cannot_be_hidden_behind_list_order():
+    """Two envelopes, one claim: the verdict must be a property of the SET supplied.
+
+    Indexing by recomputed claim digest is right -- a link names content. But the
+    envelope is not in the claim, so an attacker can wrap an honest receipt in a
+    signature nobody's key made without moving that digest. Deduping on the digest
+    ran the standalone ladder on whichever copy arrived FIRST and dropped the other
+    unexamined, so `verify_graph([honest, forged])` was green and
+    `verify_graph([forged, honest])` was red -- the same documents, the verdict
+    decided by list order. docs/GRAPHS.md rule 1 says every node verifies standalone;
+    that has to mean every receipt supplied, and the node's verdict is their
+    conjunction.
+    """
+    desks, root = build_chain()
+    honest = desks[0]
+    forged = _re_envelope(honest, signature=_FORGED_SIGNATURE)
+    digest = honest["receipt_sha256"]
+
+    first = verify_graph([forged, honest] + desks[1:] + [root])
+    last = verify_graph([honest] + desks[1:] + [root, forged])
+
+    for label, g in (("forged first", first), ("forged last", last)):
+        assert len(g["nodes"]) == 4, f"{label}: one claim is still one node"
+        assert g["nodes"][digest]["verified"] is False, (
+            f"{label}: a supplied receipt that does not verify was never examined")
+        assert g["nodes"][digest]["envelopes"] == 2, label
+        assert g["graph_verified"] is False, label
+        assert any("DUPLICATE ENVELOPE" in n for n in g["notes"]), (
+            f"{label}: the second envelope must be REPORTED, not silently dropped")
+    assert first["nodes"][digest] == last["nodes"][digest], (
+        "the node verdict, notes included, must not depend on arrival order")
+
+
+def test_a_second_honest_envelope_is_reported_but_not_an_accusation():
+    """Multiplicity is not forgery. `env` records the platform and is excluded from
+    the claim, so the same computation logged on two machines is two envelopes of one
+    claim and both are true. The conjunction refuses a FAILING envelope, never a
+    second one -- refusing here would be a false accusation against an honest set."""
+    desks, root = build_chain()
+    twin = _re_envelope(desks[0], env={"platform": "aarch64", "python": "3.12.0"})
+    g = verify_graph([desks[0], twin] + desks[1:] + [root])
+    assert g["graph_verified"] is True, g
+    assert len(g["nodes"]) == 4
+    assert g["nodes"][desks[0]["receipt_sha256"]]["envelopes"] == 2
+    assert any("DUPLICATE ENVELOPE" in n for n in g["notes"])
+
+
 def test_a_linked_receipt_still_verifies_standalone_under_plain_verify():
     """Compatibility: links are additive. A pre-graph verifier sees an ordinary
     receipt and verifies it on the standalone ladder."""

@@ -177,6 +177,21 @@ def test_fuzzed_graphs_reach_identical_verdicts_in_python_and_javascript():
     node's (verified, links_ok) pair, 'incomplete' string included. Receipts cross
     as canonical text, so integers never round through a double."""
     cases, py_verdicts = [], {}
+
+    def record(name: str, receipts: list) -> None:
+        texts = [_json.dumps(r, sort_keys=True, separators=(",", ":")) for r in receipts]
+        cases.append((name, texts))
+        g = verify_graph([_json.loads(t) for t in texts])
+        py_verdicts[name] = {
+            "graph_verified": g["graph_verified"],
+            "complete": g["complete"],
+            "missing": g["missing"],
+            "roots": sorted(g["roots"]),
+            "nodes": {d: {"verified": n["verified"], "links_ok": n["links_ok"],
+                          "envelopes": n["envelopes"]}
+                      for d, n in g["nodes"].items()},
+        }
+
     for seed in range(25):
         rng = random.Random(seed * 7333 + 5)
         receipts = _build_random_dag(rng)
@@ -184,18 +199,24 @@ def test_fuzzed_graphs_reach_identical_verdicts_in_python_and_javascript():
         for phase in ("honest", "corrupt"):
             if phase == "corrupt":
                 _corrupt(rng, receipts)
-            name = f"s{seed}-{phase}"
-            texts = [_json.dumps(r, sort_keys=True, separators=(",", ":")) for r in receipts]
-            cases.append((name, texts))
-            g = verify_graph([_json.loads(t) for t in texts])
-            py_verdicts[name] = {
-                "graph_verified": g["graph_verified"],
-                "complete": g["complete"],
-                "missing": g["missing"],
-                "roots": sorted(g["roots"]),
-                "nodes": {d: {"verified": n["verified"], "links_ok": n["links_ok"]}
-                          for d, n in g["nodes"].items()},
-            }
+            record(f"s{seed}-{phase}", receipts)
+
+    # ---- duplicate ENVELOPES around one claim. `signature` and `env` are outside the
+    # claim, so these index to the SAME digest as the receipt they wrap: one claim,
+    # two documents. Crossed with arrival order, because the defect this covers was
+    # exactly an order-sensitive verdict -- and a divergence here would mean the two
+    # implementations disagree about which of two supplied receipts got examined.
+    base = _build_random_dag(random.Random(99))
+    twin = dict(base[0], env={"platform": "aarch64"})
+    hostile = dict(base[0], signature={
+        "spec": "obsign/signature/v2", "alg": "ed25519", "signer": "nobody",
+        "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "sig": "00" * 64, "binds": [], "binds_sha256": None})
+    for label, extra in (("honest", twin), ("forged", hostile)):
+        record(f"dup-{label}-first", [extra] + base)
+        record(f"dup-{label}-last", base + [extra])
+        assert py_verdicts[f"dup-{label}-first"] == py_verdicts[f"dup-{label}-last"], (
+            f"dup-{label}: the Python verdict moved with arrival order")
 
     fd, name = tempfile.mkstemp(suffix=".json")
     os.close(fd)

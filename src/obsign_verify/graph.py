@@ -13,6 +13,12 @@ the graph `incomplete` -- reported with the digest, and spelled differently from
 FORGED in both directions, because "I could not check this" and "this is false" are
 different facts. `graph_verified` is the conjunction: every supplied node verifies,
 every link binds, nothing referenced is missing, no cycles, no digest collisions.
+
+A NODE IS A CLAIM; A RECEIPT IS AN ENVELOPE AROUND ONE. `signature`, `case`, `env`
+and `receipt_sha256` are all outside the claim, so two documents can index to the
+same node -- one genuine, one re-enveloped by whoever handed you the set. Every
+supplied envelope runs the ladder and the node's verdict is their conjunction, so a
+hostile copy is a supplied failure rather than an accident of list order.
 """
 from __future__ import annotations
 
@@ -52,11 +58,34 @@ def _well_formed_link(ln: Any) -> str | None:
     return None
 
 
+def _envelope_key(receipt: dict, index: int) -> bytes:
+    """What tells two receipts carrying the SAME claim apart.
+
+    `signature`, `case`, `env`, `receipt_sha256` and `_`-prefixed helpers all live
+    outside the claim, so re-enveloping a receipt leaves the claim digest this graph
+    indexes by exactly where it was. Canonicalising the whole document is what
+    distinguishes the copies. A document that will not canonicalise gets a key unique
+    to its position, so it counts as its own envelope instead of being merged into
+    another receipt's verdict.
+    """
+    try:
+        return canonical_bytes(receipt)
+    except (ValueError, TypeError):
+        return f"<uncanonicalisable envelope #{index}>".encode("utf-8")
+
+
+def _placeholder(key: str, note: str) -> dict:
+    """A supplied item that never became a receipt. Still ONE document, so it carries
+    one envelope under a key unique to it -- it must never merge with anything."""
+    return {"receipt": None, "verified": False, "links_ok": None, "notes": [note],
+            "envelopes": {key.encode("utf-8"): None}}
+
+
 def verify_graph(receipts: list) -> dict:
     """Verify RECEIPTS individually and transitively. Never raises on hostile input --
     an exception is not a refusal, on a graph exactly as on a single receipt."""
     graph_notes: list[str] = []
-    nodes: dict[str, dict] = {}          # digest -> {"receipt", "verified", "links_ok", "notes"}
+    nodes: dict[str, dict] = {}          # digest -> {"receipt", "envelopes", "verified", ...}
     canon_bytes: dict[str, bytes] = {}   # digest -> canonical claim bytes (collision check)
 
     # ---- index by RECOMPUTED claim hash: a link names content, not a self-description
@@ -64,17 +93,16 @@ def verify_graph(receipts: list) -> dict:
         if not isinstance(r, dict):
             graph_notes.append(f"receipts[{i}] is not an object; ignored as a node "
                                f"(and the graph cannot be green with it supplied)")
-            nodes[f"<non-object #{i}>"] = {"receipt": None, "verified": False,
-                                           "links_ok": None,
-                                           "notes": ["not a JSON object"]}
+            nodes[f"<non-object #{i}>"] = _placeholder(f"<non-object #{i}>",
+                                                       "not a JSON object")
             continue
         try:
             digest = canonical_sha256(claim_of(r))
             cbytes = canonical_bytes(claim_of(r))
         except (ValueError, TypeError) as exc:
-            nodes[f"<uncanonicalisable #{i}>"] = {
-                "receipt": None, "verified": False, "links_ok": None,
-                "notes": [f"claim is not canonicalisable ({type(exc).__name__}: {exc})"]}
+            nodes[f"<uncanonicalisable #{i}>"] = _placeholder(
+                f"<uncanonicalisable #{i}>",
+                f"claim is not canonicalisable ({type(exc).__name__}: {exc})")
             continue
         if digest in nodes:
             if canon_bytes[digest] != cbytes:
@@ -83,20 +111,41 @@ def verify_graph(receipts: list) -> dict:
                                    f"{digest[:16]}.. -- refusing the whole graph")
                 nodes[digest]["notes"].append("digest collision")
                 nodes[digest]["links_ok"] = False
-            continue                      # byte-identical duplicate: dedupe silently
-        nodes[digest] = {"receipt": r, "verified": None, "links_ok": None, "notes": []}
+                continue
+            # Same claim, a DIFFERENT document. Dropping it here ran the standalone
+            # ladder on whichever copy arrived first and never examined the other, so
+            # a forged re-envelope supplied second was invisible and the same set of
+            # receipts came out green or red depending on list order.
+            nodes[digest]["envelopes"].setdefault(_envelope_key(r, i), r)
+            continue
+        nodes[digest] = {"receipt": r, "verified": None, "links_ok": None, "notes": [],
+                         "envelopes": {_envelope_key(r, i): r}}
         canon_bytes[digest] = cbytes
+
+    for digest, node in nodes.items():
+        if len(node["envelopes"]) > 1:
+            graph_notes.append(
+                f"DUPLICATE ENVELOPE: claim {digest[:16]}.. was supplied as "
+                f"{len(node['envelopes'])} documents differing outside the claim "
+                f"(signature/case/env/receipt_sha256); each is verified and this "
+                f"node's verdict is their conjunction")
 
     # ---- every supplied node runs the FULL standalone ladder
     for digest, node in nodes.items():
         if node["receipt"] is None:
             continue
-        res = verify(node["receipt"])
-        node["verified"] = bool(res.get("verified"))
-        node["standalone"] = res
-        if not node["verified"]:
-            node["notes"].append("does not verify standalone: "
-                                 + "; ".join(res.get("notes", [])[:2]))
+        # EVERY envelope, in canonical order rather than arrival order, so the notes
+        # read identically however the list was shuffled. docs/GRAPHS.md rule 1 is
+        # "every node verifies standalone", and a receipt deduped away never ran the
+        # ladder at all -- so the node's verdict is the conjunction over the documents
+        # actually supplied, and one hostile copy cannot hide behind an honest one.
+        results = [verify(node["envelopes"][k]) for k in sorted(node["envelopes"])]
+        node["verified"] = all(bool(res.get("verified")) for res in results)
+        node["standalone"] = results[0]
+        for res in results:
+            if not res.get("verified"):
+                node["notes"].append("does not verify standalone: "
+                                     + "; ".join(res.get("notes", [])[:2]))
 
     # ---- re-derive outputs once per node that anything links to
     _out_cache: dict[str, list | None] = {}
@@ -229,6 +278,7 @@ def verify_graph(receipts: list) -> dict:
         "roots": roots,
         "order": order,                      # children-first where acyclic
         "nodes": {d: {"verified": n["verified"], "links_ok": n["links_ok"],
-                      "notes": n["notes"]} for d, n in nodes.items()},
+                      "envelopes": len(n["envelopes"]), "notes": n["notes"]}
+                  for d, n in nodes.items()},
         "notes": graph_notes,
     }

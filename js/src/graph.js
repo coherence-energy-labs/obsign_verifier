@@ -11,6 +11,12 @@
  *
  * Values are BigInt end to end: the parent's declared inputs and the child's
  * re-derived outputs are compared as exact int64s, never through doubles.
+ *
+ * A NODE IS A CLAIM; A RECEIPT IS AN ENVELOPE AROUND ONE. `signature`, `case`, `env`
+ * and `receipt_sha256` are all outside the claim, so two documents can index to the
+ * same node -- one genuine, one re-enveloped by whoever handed you the set. Every
+ * supplied envelope runs the ladder and the node's verdict is their conjunction, so a
+ * hostile copy is a supplied failure rather than an accident of list order.
  */
 
 const { canonicalSha256, canonicalString, claimOf } = require('./canonical.js');
@@ -43,18 +49,39 @@ function wellFormedLink(ln) {
 
 const num = (b) => Number(b);   // link offsets are bounded by MAX_MEM, lossless
 
+/** What tells two receipts carrying the SAME claim apart. `signature`, `case`, `env`,
+ * `receipt_sha256` and `_`-prefixed helpers are outside the claim, so re-enveloping a
+ * receipt leaves the claim digest this graph indexes by exactly where it was;
+ * canonicalising the whole document is what distinguishes the copies. One that will
+ * not canonicalise gets a key unique to its position rather than merging into another
+ * receipt's verdict. Canonical JSON is pure ASCII, so sorting these strings by UTF-16
+ * unit is the same order Python gets sorting the bytes. */
+const envelopeKey = (receipt, index) => {
+  try {
+    return canonicalString(receipt);
+  } catch (e) {
+    return `<uncanonicalisable envelope #${index}>`;
+  }
+};
+
+/** A supplied item that never became a receipt. Still ONE document, so it carries one
+ * envelope under a key unique to it -- it must never merge with anything. */
+const placeholder = (key, note) => ({
+  receipt: null, verified: false, linksOk: null, notes: [note],
+  envelopes: new Map([[key, null]]),
+});
+
 /** Verify RECEIPTS (boxed, as loadReceipt returns them) individually and
  * transitively. Never throws on hostile input. */
 function verifyGraph(receipts) {
   const graphNotes = [];
-  const nodes = new Map();       // digest -> {receipt, receiptPlain, verified, linksOk, notes}
+  const nodes = new Map();       // digest -> {receipt, receiptPlain, envelopes, verified, ...}
   const canon = new Map();       // digest -> canonical claim string (collision check)
 
   receipts.forEach((r, i) => {
     if (r === null || typeof r !== 'object' || !(r.__obj instanceof Map)) {
       graphNotes.push(`receipts[${i}] is not a receipt object; the graph cannot be green`);
-      nodes.set(`<non-object #${i}>`, { receipt: null, verified: false, linksOk: null,
-                                        notes: ['not a receipt object'] });
+      nodes.set(`<non-object #${i}>`, placeholder(`<non-object #${i}>`, 'not a receipt object'));
       return;
     }
     let digest, cstr;
@@ -62,28 +89,55 @@ function verifyGraph(receipts) {
       digest = canonicalSha256(claimOf(r));
       cstr = canonicalString(claimOf(r));
     } catch (e) {
-      nodes.set(`<uncanonicalisable #${i}>`, { receipt: null, verified: false, linksOk: null,
-                                               notes: [`claim is not canonicalisable (${e.message})`] });
+      nodes.set(`<uncanonicalisable #${i}>`,
+                placeholder(`<uncanonicalisable #${i}>`,
+                            `claim is not canonicalisable (${e.message})`));
       return;
     }
     if (nodes.has(digest)) {
+      const node = nodes.get(digest);
       if (canon.get(digest) !== cstr) {
         graphNotes.push(`COLLISION: two different claims share digest ${digest.slice(0, 16)}.. -- refusing the whole graph`);
-        nodes.get(digest).notes.push('digest collision');
-        nodes.get(digest).linksOk = false;
+        node.notes.push('digest collision');
+        node.linksOk = false;
+        return;
       }
-      return;                      // byte-identical duplicate: dedupe
+      // Same claim, a DIFFERENT document. Dropping it here ran the standalone ladder
+      // on whichever copy arrived first and never examined the other, so a forged
+      // re-envelope supplied second was invisible and the same set of receipts came
+      // out green or red depending on list order.
+      const key = envelopeKey(r, i);
+      if (!node.envelopes.has(key)) node.envelopes.set(key, r);
+      return;
     }
-    nodes.set(digest, { receipt: r, receiptPlain: plain(r), verified: null, linksOk: null, notes: [] });
+    nodes.set(digest, { receipt: r, receiptPlain: plain(r), verified: null, linksOk: null,
+                        notes: [], envelopes: new Map([[envelopeKey(r, i), r]]) });
     canon.set(digest, cstr);
   });
 
+  for (const [digest, node] of nodes) {
+    if (node.envelopes.size > 1) {
+      graphNotes.push(`DUPLICATE ENVELOPE: claim ${digest.slice(0, 16)}.. was supplied as `
+        + `${node.envelopes.size} documents differing outside the claim `
+        + '(signature/case/env/receipt_sha256); each is verified and this node\'s '
+        + 'verdict is their conjunction');
+    }
+  }
+
   for (const node of nodes.values()) {
     if (node.receipt === null) continue;
-    const res = verify(node.receipt);
-    node.verified = res.verified === true;
-    if (!node.verified) {
-      node.notes.push('does not verify standalone: ' + (res.notes || []).slice(0, 2).join('; '));
+    // EVERY envelope, in canonical order rather than arrival order, so the notes read
+    // identically however the list was shuffled. docs/GRAPHS.md rule 1 is "every node
+    // verifies standalone", and a receipt deduped away never ran the ladder at all --
+    // so the verdict is the conjunction over the documents actually supplied, and one
+    // hostile copy cannot hide behind an honest one.
+    node.verified = true;
+    for (const key of [...node.envelopes.keys()].sort()) {
+      const res = verify(node.envelopes.get(key));
+      if (res.verified !== true) {
+        node.verified = false;
+        node.notes.push('does not verify standalone: ' + (res.notes || []).slice(0, 2).join('; '));
+      }
     }
   }
 
@@ -217,7 +271,8 @@ function verifyGraph(receipts) {
 
   const nodeOut = {};
   for (const [d, n] of nodes) {
-    nodeOut[d] = { verified: n.verified, links_ok: n.linksOk, notes: n.notes };
+    nodeOut[d] = { verified: n.verified, links_ok: n.linksOk,
+                   envelopes: n.envelopes.size, notes: n.notes };
   }
   return {
     graph_verified: graphVerified,

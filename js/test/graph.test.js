@@ -95,6 +95,56 @@ test('a wrong output_sha256 inside a link is refused', () => {
   assert.ok(node.notes.some((n) => n.includes('output_sha256')));
 });
 
+// A well-formed Ed25519 public key (RFC 8032 7.1) under a signature nobody made, so
+// the refusal comes from the crypto rather than from a malformed field.
+const FORGED_SIGNATURE = () => ({ __obj: new Map(Object.entries({
+  spec: 'obsign/signature/v2', alg: 'ed25519', signer: 'Desk A',
+  public_key: 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+  sig: '00'.repeat(64), binds: [], binds_sha256: null,
+})) });
+
+test('a hostile re-envelope of a claim is a supplied failure, whatever the order', () => {
+  // `signature` is outside the claim, so wrapping an honest receipt in a signature
+  // nobody's key made produces a DIFFERENT document with the SAME claim digest --
+  // the digest the graph indexes by. Deduping on it ran the ladder on whichever copy
+  // arrived first and dropped the other unexamined, so the same four documents came
+  // out green or red depending on list order. Both languages must refuse both orders.
+  const honest = load('desk_credit.json');
+  const forged = load('desk_credit.json');
+  forged.__obj.set('signature', FORGED_SIGNATURE());
+  const digest = canonicalSha256(claimOf(honest));
+  assert.strictEqual(canonicalSha256(claimOf(forged)), digest,
+    'the re-envelope must not move the claim digest, or it proves nothing');
+
+  const rest = () => ['desk_lending.json', 'desk_rates.json', 'firm_root.json'].map(load);
+  const first = verifyGraph([forged, honest, ...rest()]);
+  const last = verifyGraph([honest, ...rest(), forged]);
+  for (const [label, g] of [['forged first', first], ['forged last', last]]) {
+    assert.strictEqual(Object.keys(g.nodes).length, 4, `${label}: one claim, one node`);
+    assert.strictEqual(g.nodes[digest].verified, false, label);
+    assert.strictEqual(g.nodes[digest].envelopes, 2, label);
+    assert.strictEqual(g.graph_verified, false, label);
+    assert.ok(g.notes.some((n) => n.includes('DUPLICATE ENVELOPE')),
+      `${label}: the second envelope must be reported, not silently dropped`);
+  }
+  assert.deepStrictEqual(first.nodes[digest], last.nodes[digest],
+    'the node verdict, notes included, must not depend on arrival order');
+});
+
+test('a second HONEST envelope is reported but is not an accusation', () => {
+  // `env` records the platform and is outside the claim, so one computation logged on
+  // two machines is two envelopes of one claim and both are true.
+  const twin = load('desk_credit.json');
+  twin.__obj.set('env', { __obj: new Map(Object.entries({ platform: 'aarch64' })) });
+  const digest = canonicalSha256(claimOf(twin));
+  const g = verifyGraph([load('desk_credit.json'), twin,
+    ...['desk_lending.json', 'desk_rates.json', 'firm_root.json'].map(load)]);
+  assert.strictEqual(g.graph_verified, true, JSON.stringify(g.notes));
+  assert.strictEqual(Object.keys(g.nodes).length, 4);
+  assert.strictEqual(g.nodes[digest].envelopes, 2);
+  assert.ok(g.notes.some((n) => n.includes('DUPLICATE ENVELOPE')));
+});
+
 test('hostile garbage in the receipt list never throws', () => {
   const g = verifyGraph([null, 42, 'x', chain()[0]]);
   assert.strictEqual(g.graph_verified, false);

@@ -16,7 +16,8 @@ for (const [name, texts] of cases) {
   const g = verifyGraph(receipts);
   const nodes = {};
   for (const [d, n] of Object.entries(g.nodes)) {
-    nodes[d] = { verified: n.verified, links_ok: n.links_ok === null ? null : n.links_ok };
+    nodes[d] = { verified: n.verified, links_ok: n.links_ok === null ? null : n.links_ok,
+                 envelopes: n.envelopes };
   }
   out[name] = {
     graph_verified: g.graph_verified,
