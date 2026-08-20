@@ -398,7 +398,8 @@ def test_the_parsers_agree_on_every_generated_document(seed):
           f"canonicalised identically")
 
 
-@pytest.mark.skipif(not _HAS_RUST, reason="rust/target/release/obsign-verify-rs is not built")
+@pytest.mark.skipif(not _HAS_RUST and "rust" not in _REQUIRE,
+                    reason="rust/target/release/obsign-verify-rs is not built")
 @pytest.mark.parametrize("seed", range(_SEEDS))
 def test_the_rust_reading_answers_what_python_answers(seed):
     """A fourth reading of the wire format, and the tie-breaker on two open defects.
@@ -421,6 +422,10 @@ def test_the_rust_reading_answers_what_python_answers(seed):
         chunk = cases[off:off + 400]
         rust = rust_columns(chunk)
         if not rust:
+            if "rust" in _REQUIRE:
+                raise AssertionError("OBSIGN_REQUIRE=rust was set but the rust "
+                                     "harness produced nothing -- a skip reads "
+                                     "like a pass in every summary line")
             pytest.skip("the rust harness produced nothing -- treated as absent")
         for cid, text in chunk:
             if cid not in rust:
@@ -665,7 +670,8 @@ def test_every_frozen_vector_still_behaves_as_recorded_in_javascript():
                        + "\n  ".join(wrong))
 
 
-@pytest.mark.skipif(not _HAS_RUST, reason="rust/target/release/obsign-verify-rs is not built")
+@pytest.mark.skipif(not _HAS_RUST and "rust" not in _REQUIRE,
+                    reason="rust/target/release/obsign-verify-rs is not built")
 def test_every_frozen_vector_still_behaves_as_recorded_in_rust():
     """The tie-break column, and the reason every one of these vectors has a verdict.
 
@@ -682,6 +688,9 @@ def test_every_frozen_vector_still_behaves_as_recorded_in_rust():
     # divergence and is deleted only once all implementations agree.
     got = rust_columns([(e["id"], corpus_text(e)) for e in entries])
     if not got:
+        if "rust" in _REQUIRE:
+            raise AssertionError("OBSIGN_REQUIRE=rust was set but the rust harness "
+                                 "produced nothing -- a skip reads like a pass")
         pytest.skip("the rust harness produced nothing -- treated as absent")
     wrong = [f"{e['id']}: rust now "
              f"{'load' if got[e['id']]['loads'] else 'refuse'}, vector recorded "
