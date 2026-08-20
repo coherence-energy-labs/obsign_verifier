@@ -33,6 +33,13 @@ explicitly with `mulfx(x, y, F)`, whose F is a literal number of fractional bits
 Comparisons yield 0 or 1, so boolean logic is bitwise (`a < b & c < d`); there is no
 short-circuit operator, because short-circuit is control flow and the machine already
 spells control flow `if`.
+
+SCALARS ARE ZERO UNTIL ASSIGNED. There is no block scoping: a `let` anywhere is visible
+for the rest of the program, and a scalar reads 0 until it is assigned on the path that
+actually runs. This is not a convenience -- it is the machine's own behaviour, whose
+memory starts zeroed, made a language rule so the compiled program and the reference
+interpreter cannot disagree about a variable written only inside a branch that did not
+execute. (A name that is never declared at all is still a compile error.)
 """
 from __future__ import annotations
 

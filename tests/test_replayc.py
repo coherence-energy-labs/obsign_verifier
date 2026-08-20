@@ -250,6 +250,15 @@ def test_reassigning_an_input_is_allowed():
     assert run_source("input a; a = a + 1; output a;", [41]) == [42]
 
 
+def test_scalar_is_zero_until_assigned_on_the_executed_path():
+    """A variable `let` only inside a branch that did not run reads 0 -- the machine's
+    zeroed memory, made a language rule so the VM and interpreter never disagree. This
+    is the exact case the fuzzer surfaced."""
+    src = "input c; if c > 0 { let x = 100; } output x;"
+    assert run_source(src, [1]) == interpret_source(src, [1]) == [100]
+    assert run_source(src, [0]) == interpret_source(src, [0]) == [0]     # branch skipped -> 0
+
+
 def test_no_program_without_output_is_accepted():
     with pytest.raises(ParseError):
         compile_source("input a; let x = a;")

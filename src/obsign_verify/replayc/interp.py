@@ -111,9 +111,13 @@ class Interpreter:
         if isinstance(e, nodes.IntLit):
             return e.value
         if isinstance(e, nodes.Name):
-            if e.ident not in self.f.vars:
-                raise InterpError(f"use of undefined variable {e.ident!r}")
-            return self.f.vars[e.ident]
+            # A scalar reads 0 until it is assigned on the executed path. This MODELS
+            # THE MACHINE, whose memory starts zeroed and whose cell for this variable
+            # is 0 until a MOV writes it -- so a variable `let` inside a branch that did
+            # not run reads 0 here exactly as it does there. The typer has already
+            # rejected any name that is never declared at all; this default is only for
+            # a declared name not yet assigned on this path.
+            return self.f.vars.get(e.ident, 0)
         if isinstance(e, nodes.Index):
             arr = self.f.arrays[e.array]
             idx = self._eval(e.index)

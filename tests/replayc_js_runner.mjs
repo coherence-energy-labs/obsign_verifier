@@ -26,7 +26,10 @@ const cases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const out = cases.map(({ programText, inputs }) => {
   try {
     const prog = plain(canonical.loadReceipt(programText));
-    const res = replay.run(prog, inputs.map(BigInt));
+    // inputs arrive as DECIMAL STRINGS, not JSON numbers: an int64 above 2^53 would
+    // lose precision through JSON.parse (the exact trap this whole system guards),
+    // so BigInt each string directly.
+    const res = replay.run(prog, inputs.map((s) => BigInt(s)));
     return { ok: res.map(String) };
   } catch (e) {
     if (e instanceof replay.Trap) return { trap: true };

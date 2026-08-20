@@ -66,7 +66,7 @@ def test_compiled_programs_agree_on_python_and_js_vms():
         prog = compile_source(src)
         program_text = json.dumps(prog)
         for inp in inputs:
-            cases.append({"programText": program_text, "inputs": inp})
+            cases.append({"programText": program_text, "inputs": [str(x) for x in inp]})
             try:
                 py = run_source(src, inp)
                 ref = interpret_source(src, inp)
@@ -96,7 +96,7 @@ def test_cecl_output_hash_matches_on_js_vm_too():
            "while i<n { let base=i*3+1; let el=mulfx(v[base],v[base+1],32);"
            " acc=acc+mulfx(el,v[base+2],32); i=i+1; }\noutput acc;")
     prog = compile_source(src)
-    js = _run_js([{"programText": json.dumps(prog), "inputs": inputs}])[0]
+    js = _run_js([{"programText": json.dumps(prog), "inputs": [str(x) for x in inputs]}])[0]
     assert "ok" in js, f"js run failed: {js}"
     got = [int(x) for x in js["ok"]]
     assert output_sha256(got) == receipt["output"]["sha256"]
