@@ -53,8 +53,14 @@ def parse_program(text: str) -> Program:
 
 
 def compile_source(text: str) -> dict:
-    """Source -> a validated `obsign/replay/1` program dict."""
-    return codegen.generate(parse_program(text))
+    """Source -> a validated `obsign/replay/1` program dict.
+
+    The pipeline is parse -> check -> FOLD -> generate. Folding and code generation
+    run only here, on the compile path; interpret_source evaluates the raw checked
+    tree. The differential suite compares the two, so an optimizer bug shows up as a
+    divergence instead of being shared by both sides."""
+    from .fold import fold_program
+    return codegen.generate(fold_program(parse_program(text)))
 
 
 def run_source(text: str, inputs: list[int]) -> list[int]:

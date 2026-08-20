@@ -269,6 +269,70 @@ def test_over_large_literal_is_rejected():
         compile_source(f"output {1 << 63};")        # INT64_MAX+1
 
 
+def test_codegen_quality_does_not_rot():
+    """The optimizer's wins, pinned. These are ceilings with a little slack, not exact
+    counts -- the point is that a regression to naive lowering (re-LOADC'ing constants
+    per use, temp-then-MOV chains, runtime checks on constant indices) fails loudly
+    instead of silently doubling every receipt's verification cost."""
+    from collections import Counter
+
+    prog = compile_source(CECL_SRC)
+    ops = Counter(i[0] for i in prog["code"])
+    assert len(prog["code"]) <= 40, f"CECL compiled to {len(prog['code'])} instructions (was 35)"
+    # every distinct nonzero constant is loaded exactly once, in the preamble
+    assert ops["LOADC"] == len([c for c in prog["consts"]]), (
+        f"{ops['LOADC']} LOADCs for {len(prog['consts'])} distinct constants -- "
+        f"constants are being reloaded instead of pooled")
+
+    # a constant in-range index is a known cell: reading it emits NOTHING
+    static = compile_source("input a; arr xs[3]; xs[1] = a; output xs[1] + xs[1];")
+    assert not any(i[0] in ("LOAD", "STORE") for i in static["code"]), (
+        "a statically-indexed access emitted a runtime LOAD/STORE")
+    assert not any(i[0] == "DIV" for i in static["code"]), (
+        "a statically in-range access emitted a bounds gadget")
+
+    # the executed cost of the anchor stays bounded: ~26 steps per exposure
+    from obsign_verify.replay import run_counted
+    inputs = [4, 18038863, 1932735283, 1250000000, 133143986, 2362232013,
+              320000000, 2061584302, 3092376453, 85000000, 3865471, 1717986918, 4800000000]
+    _, steps = run_counted(prog, inputs)
+    assert steps <= 130, f"CECL executed {steps} steps for 4 exposures (was 115)"
+
+
+def test_folding_preserves_traps():
+    """A constant `1/0` is not a compile error -- it is a trap to preserve: the branch
+    it sits on may never run, and when it does run it must refuse. sel() folding may
+    not delete a potentially-trapping arm the machine would have evaluated."""
+    # constant div-by-zero on the UNTAKEN branch: program runs fine
+    src = "input c; let r = 0; if c { r = 1; } else { r = 1 / 0; } output r;"
+    assert run_source(src, [1]) == interpret_source(src, [1]) == [1]
+    # ...and on the TAKEN branch: both refuse
+    with pytest.raises(Trap):
+        run_source(src, [0])
+    with pytest.raises(Trap):
+        interpret_source(src, [0])
+    # sel(1, a, xs[i]) may not drop the array read -- it can trap
+    src2 = "input i; arr xs[2]; output sel(1, 7, xs[i]);"
+    with pytest.raises(Trap):
+        run_source(src2, [9])
+    with pytest.raises(Trap):
+        interpret_source(src2, [9])
+    assert run_source(src2, [0]) == interpret_source(src2, [0]) == [7]
+
+
+def test_statically_out_of_range_index_still_traps_at_its_line():
+    """xs[99] with a constant index is not a compile error either -- it always traps
+    WHEN REACHED, and must keep doing so exactly where the interpreter does."""
+    src = "input c; let r = 5; if c { r = 1; } else { arr2[99] = 1; } arr arr2[3]; output r;"
+    # arrays must be declared before use in source order; rewrite properly:
+    src = "input c; arr a2[3]; let r = 5; if c { r = 1; } else { a2[99] = 1; } output r;"
+    assert run_source(src, [1]) == interpret_source(src, [1]) == [1]
+    with pytest.raises(Trap):
+        run_source(src, [0])
+    with pytest.raises(Trap):
+        interpret_source(src, [0])
+
+
 def test_the_full_open_loop_author_compile_verify():
     """The whole reason this compiler ships in the verifier: a program written in RL,
     compiled here, assembled into a receipt, is then VERIFIED by the verifier's own
