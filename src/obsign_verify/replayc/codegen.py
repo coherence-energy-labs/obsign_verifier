@@ -169,15 +169,19 @@ class Codegen:
         self._temp_ptr = self._temp_base
         self._temp_hi = self._temp_base
 
+        body_cost = 0
         for s in self.prog.body:
             self._reset_temps()
-            self._stmt(s, None)
+            c = self._stmt(s, None)
+            body_cost = None if (body_cost is None or c is None) else body_cost + c
+        mark = len(self.code)
         for i, e in enumerate(self.prog.outputs):
             self._reset_temps()
             c = self._expr(e, want=out_off + i)
             if c != out_off + i:
                 self._emit("MOV", out_off + i, c)
         self._emit("HALT")
+        tail_cost = len(self.code) - mark          # outputs + HALT, all straight-line
 
         # ---- place the pool after the temp high-water, resolve placeholders ----
         pool_base = max(self._temp_hi, self._next)
@@ -204,7 +208,23 @@ class Codegen:
                     out.append(a)
             final.append(out)
 
-        steps = self.prog.steps if self.prog.steps is not None else MAX_STEPS
+        # ---- the step budget: declared beats inferred beats the hard ceiling ----
+        # When every loop is statically bounded, the compiler KNOWS the worst-case
+        # instruction count exactly (preamble + body + outputs + HALT) and writes it
+        # as the budget: the tightest honest `steps` a receipt can carry, computed
+        # instead of guessed. An author's explicit #steps always wins -- their
+        # contract, their number.
+        self.inferred_steps = (None if body_cost is None
+                               else len(self.pre) + body_cost + tail_cost)
+        if self.prog.steps is not None:
+            steps = self.prog.steps
+        elif self.inferred_steps is not None:
+            # a worst case beyond the VM's hard ceiling clamps to the ceiling: a run
+            # that would exceed it traps there regardless, and a break-carrying
+            # program may legitimately finish far earlier
+            steps = min(self.inferred_steps, MAX_STEPS)
+        else:
+            steps = MAX_STEPS
         if not (1 <= steps <= MAX_STEPS):
             raise CodegenError(f"#steps {steps} must be in 1..{MAX_STEPS}")
 
@@ -223,13 +243,23 @@ class Codegen:
         return program
 
     # ---- statements ----
-    def _stmt(self, s: nodes.Stmt, loop: _LoopCtx | None) -> None:
+    #
+    # Each statement returns its WORST-CASE executed instruction count, or None when
+    # it cannot be bounded statically (a `while`, a `for` with non-constant bounds or
+    # a body that writes its own loop variable). generate() composes these into an
+    # exact step budget: for straight-line code and taken-worst branches the count is
+    # achieved, not merely bounded -- pinned by tests that run at the inferred budget
+    # and trap at budget-1.
+    def _stmt(self, s: nodes.Stmt, loop: _LoopCtx | None) -> int | None:
         if isinstance(s, (nodes.Let, nodes.Assign)):
+            mark = len(self.code)
             dst = self.scalar[s.name]
             c = self._expr(s.expr, want=dst)
             if c != dst:
                 self._emit("MOV", dst, c)
+            return len(self.code) - mark
         elif isinstance(s, nodes.StoreElem):
+            mark = len(self.code)
             base, length = self.array[s.array]
             idx = s.index
             if isinstance(idx, nodes.IntLit):
@@ -249,18 +279,23 @@ class Codegen:
                 val = self._expr(s.value)
                 addr = self._addr(idx_cell, base)
                 self._emit("STORE", addr, val)
+            return len(self.code) - mark
         elif isinstance(s, nodes.If):
+            mark = len(self.code)
             cond = self._expr(s.cond)
+            cond_cost = len(self.code) - mark
             else_l = self._label("else")
             end_l = self._label("end")
             self._emit("JMPZ", cond, else_l)
-            for st in s.then:
-                self._stmt(st, loop)
+            then_cost = _csum(self._stmt(st, loop) for st in s.then)
             self._emit("JMP", end_l)
             self._place(else_l)
-            for st in s.els:
-                self._stmt(st, loop)
+            else_cost = _csum(self._stmt(st, loop) for st in s.els)
             self._place(end_l)
+            if then_cost is None or else_cost is None:
+                return None
+            # the taken then-branch also executes its trailing JMP
+            return cond_cost + 1 + max(then_cost + 1, else_cost)
         elif isinstance(s, nodes.While):
             top = self._label("while")
             end = self._label("endwhile")
@@ -273,7 +308,9 @@ class Codegen:
                 self._stmt(st, inner)
             self._emit("JMP", top)
             self._place(end)
+            return None                      # a while's trip count is not static
         elif isinstance(s, nodes.For):
+            mark = len(self.code)
             var = self.scalar[s.var]
             hi = self._for_hi[id(s)]
             # bounds evaluated ONCE, before the first iteration -- hi into its
@@ -284,6 +321,7 @@ class Codegen:
             hi_c = self._expr(s.hi, want=hi)
             if hi_c != hi:
                 self._emit("MOV", hi, hi_c)
+            init_cost = len(self.code) - mark
             top = self._label("for")
             incr = self._label("forincr")
             end = self._label("endfor")
@@ -293,20 +331,31 @@ class Codegen:
             t = self._temp()
             self._emit("LT", t, var, hi)
             self._emit("JMPZ", t, end)
-            for st in s.body:
-                self._stmt(st, inner)
+            body_cost = _csum(self._stmt(st, inner) for st in s.body)
             self._place(incr)
             self._emit("ADD", var, var, self._cellc(1))
             self._emit("JMP", top)
             self._place(end)
+            if (body_cost is None
+                    or not isinstance(s.lo, nodes.IntLit)
+                    or not isinstance(s.hi, nodes.IntLit)
+                    or _writes_var(s.body, s.var)):
+                return None
+            n = max(0, s.hi.value - s.lo.value)
+            # n full iterations (check, body, increment, back-jump) + the final
+            # failing check. break/continue only shorten a pass, so this is an upper
+            # bound that straight-line bodies achieve exactly.
+            return init_cost + n * (2 + body_cost + 2) + 2
         elif isinstance(s, nodes.Break):
             if loop is None:  # pragma: no cover - typer rejects
                 raise CodegenError("break outside a loop")
             self._emit("JMP", loop.brk)
+            return 1
         elif isinstance(s, nodes.Continue):
             if loop is None:  # pragma: no cover - typer rejects
                 raise CodegenError("continue outside a loop")
             self._emit("JMP", loop.cont)
+            return 1
         else:  # pragma: no cover
             raise CodegenError(f"unknown statement {type(s).__name__}")
 
@@ -411,6 +460,31 @@ class Codegen:
         """An unconditional trap: division by the never-written zero cell."""
         t = self._temp()
         self._emit("DIV", t, self._cellc(1), self._cellc(0))
+
+
+def _csum(costs) -> int | None:
+    """Sum of statement costs; None (uninferable) is absorbing."""
+    total = 0
+    for c in costs:
+        if c is None:
+            return None
+        total += c
+    return total
+
+
+def _writes_var(stmts, var: str) -> bool:
+    """Does any statement in STMTS (recursively) write VAR? A for-loop whose body
+    writes its own loop variable has a data-dependent trip count -- no inference."""
+    for s in stmts:
+        if isinstance(s, (nodes.Let, nodes.Assign)) and s.name == var:
+            return True
+        if isinstance(s, nodes.If) and (_writes_var(s.then, var) or _writes_var(s.els, var)):
+            return True
+        if isinstance(s, nodes.While) and _writes_var(s.body, var):
+            return True
+        if isinstance(s, nodes.For) and (s.var == var or _writes_var(s.body, var)):
+            return True
+    return False
 
 
 def _scalar_names(prog: nodes.Program) -> list[str]:
