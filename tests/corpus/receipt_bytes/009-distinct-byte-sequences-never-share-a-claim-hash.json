@@ -1,0 +1,22 @@
+{
+  "bytes_base64": "eyJhIjoigCJ9",
+  "decode": "utf-8-strict",
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse-at-decode",
+    "rust": "refuse-at-decode"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found as a three-way split at the file-reading seam, one level ABOVE every limit any parser checks. Python and Rust refused at the decoder; the npm CLI and the verify page both substituted U+FFFD and went on to verify the result, so three distinct files shared one claim hash (c856f23670aa3692..) in the two implementations a stranger is most likely to reach. Both JavaScript sides now decode strictly.",
+  "id": "009-distinct-byte-sequences-never-share-a-claim-hash",
+  "note": "The collision half of 008, and the reason it mattered. These bytes are a different FILE from 008's -- 0x80 rather than 0xFF, and 0xC3 is a third -- and a lenient decoder turns all three into the same U+FFFD, the same canonical form and the same receipt_sha256. canonical.py names exactly this property when it explains allow_nan=False: permitting NaN 'would let two different receipts share a canonical form'. Refusing all three satisfies the property outright; loading them with distinct hashes would too. Only loading them and agreeing on one hash is the failure, and that is what these two vectors rule out.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse-at-decode",
+    "rust": "refuse-at-decode"
+  },
+  "signature": "decode=utf-8 browser=replacement-char",
+  "status": "agreed"
+}

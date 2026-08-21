@@ -12,7 +12,12 @@ $ obsign-verify receipt.json
   [VERIFIED] receipt.json
       integrity   ok
       re-derived  ok
+      inputs      ok - the output depends on the declared inputs
       signature   absent (integrity and re-derivation still hold)
+      - input-liveness is EVIDENCE, not proof: perturbing an input moved the
+        output, which shows dependence but cannot show the program computes the
+        formula its name claims. Pin an approved program digest
+        (--expect-program) for that.
 
 1/1 receipt(s) verified on THIS machine.
 ```
@@ -110,8 +115,27 @@ aggregation, and the aggregation is small.
 
 **Replay proves the output follows from the program. It does not prove the program
 computes what its name claims.** A two-instruction program returning a hardcoded
-constant re-derives perfectly, and this tool reports `VERIFIED` — correctly, because it
-did. A test pins that behaviour on purpose so nobody rediscovers it in a meeting.
+constant re-derives perfectly — the re-derivation is honest, and it establishes nothing
+about the inputs the receipt names.
+
+This tool now **refuses** that program rather than reporting `VERIFIED`: it perturbs
+each declared input and, if nothing ever moves the output, reports `input_liveness:
+dead` and fails the verdict. A constant behind an equality guard — one that traps on
+anything but its own receipted inputs — is refused the same way, as `guarded`, because
+a program that declines to run yields no evidence either.
+
+**Do not mistake that for a proof of honesty.** Probing is evidence of dependence, not
+a semantic guarantee, and no finite black-box probe can be more:
+
+```
+if inputs == this_quarter_exact_inputs:  return the number I want
+else:                                    run the real formula
+```
+
+behaves correctly under every perturbation anyone thinks to try. The verdict says so in
+its own notes, and reports which inputs were shown to reach the output and which were
+not. Liveness catches the lazy forgery; only pinning the program answers the real
+question.
 
 The answer is not a weaker verdict, it is to pin the program — which is how model
 validation already works. Read the program once (for the example: 27 instructions),
@@ -136,6 +160,35 @@ puts the signer inside the signed bytes.
 **It will not crash instead of refusing.** A verifier that raises on a hostile
 receipt has failed open in the eyes of whoever handed it the file. Malformed input
 returns `verified: false`.
+
+## Write your own
+
+**`docs/SPEC.md` is the specification**, and the standard it is held to is that a fourth
+implementation can be written from it **without reading `src/`, `js/` or `rust/`**. Five
+versioned contracts — the wire format and its six limits, the claim rule, the 31-opcode
+machine and the input-liveness probe, the signature envelope, and issuer trust, which is
+out of scope on purpose.
+
+That standard exists because it was once failed, in public and on the record. The Rust
+port is a third implementation of this format, and `rust/README.md` lists the thirteen
+rules its author had to read out of `src/obsign_verify/*.py` because no document stated
+them: the opcode table, the instruction encoding, the receipt schema, the wire limits,
+the duplicate-member refusal, the liveness algorithm, step accounting, the definition of
+`program_sha256`, the signature block, the Ed25519 equation. Every one of those is a
+place two people reading only the documents could implement the format differently and
+both believe they conform — and a forger hands the receipt to whichever one loads it.
+
+The numbers are not in the prose. They live in `docs/spec/limits.json` and
+`docs/spec/opcodes.json`, and `tests/test_spec_constants_match_code.py` holds them to all
+three implementations: the reference by import, the two ports by reading their source.
+`docs/RL.md` said "the machine has 26 opcodes" for the entire life of a 31-opcode
+machine, in a section titled *Limits, stated plainly*. Prose cannot hold a number still,
+so it is no longer asked to.
+
+An independent implementation earns **recognition, not cash**: named on the strangers
+page, named in the conformance suite, credited in the spec. Where the spec and an
+implementation disagree, the implementation is wrong unless it is named in
+`docs/SPEC.md#conformance` — and the one that currently is, is ours.
 
 ## Verify it against us
 

@@ -58,7 +58,53 @@ def parse_program(text: str) -> Program:
     ast = resolve(frontend.parse(text))
     typer.check(ast)
     check_scales(ast)
+    _check_machine_limits(ast)
     return ast
+
+
+def _check_machine_limits(ast) -> None:
+    """Refuse programs the machine could never hold, HERE rather than in codegen.
+
+    MAX_MEM and the step ceiling were enforced only on the compile side, so
+    `parse_program` -- and therefore the oracle built on it -- accepted programs
+    `compile_source` refuses. Two doors into one language admitting different
+    programs is the same class of split as two parsers disagreeing about which
+    receipts exist, and it is exactly the shared-static-check case this function's
+    caller describes: a check that only ever REJECTS is safe to share, and unsafe
+    to leave on one side.
+    """
+    from ..replay import MAX_MEM, MAX_STEPS
+    from .codegen import CodegenError
+
+    # Count what the MACHINE must hold, not just what the arrays declare. Bounding
+    # array cells alone left a two-value band -- 1048575 and 1048576 -- that parsed
+    # here and was refused by codegen, because codegen also allocates the input
+    # window, the output window and every scalar. `interpret_source` runs only
+    # parse_program, so those two lengths allocated a million cells for a program
+    # the compiler will not build.
+    total = len(getattr(ast, "inputs", ()) or ()) + len(getattr(ast, "outputs", ()) or ())
+    seen: set[str] = set()
+    stack = list(getattr(ast, "body", ()) or ())
+    while stack:
+        node = stack.pop()
+        name = getattr(node, "name", None)
+        if name is not None and type(node).__name__ == "Let" and name not in seen:
+            seen.add(name)
+        for field in ("body", "then", "els", "stmts"):
+            stack.extend(getattr(node, field, ()) or ())
+    total += len(seen)
+
+    for arr in (getattr(ast, "arrays", ()) or ()):
+        length = getattr(arr, "length", 0)
+        if not isinstance(length, int) or isinstance(length, bool) or length < 0:
+            raise CodegenError(f"array {getattr(arr, 'name', '?')!r} has a non-integer length")
+        total += length
+        if total > MAX_MEM:
+            raise CodegenError(f"program needs more than {MAX_MEM} cells, over the limit")
+    declared = getattr(ast, "steps", None)
+    if declared is not None and (not isinstance(declared, int) or isinstance(declared, bool)
+                                 or declared < 1 or declared > MAX_STEPS):
+        raise CodegenError(f"#steps {declared} must be in 1..{MAX_STEPS}")
 
 
 def compile_source(text: str) -> dict:

@@ -25,6 +25,17 @@ from .canonical import integrity
 from . import replay as replaymod
 from .kernel import SUPPORTED_KERNELS, array_sha256, build_fixed_inputs, evolve
 
+#: The ONE receipt envelope this verifier implements.
+#:
+#: The first decision in verification is "do I know what these bytes are?", and it was
+#: never asked: the ladder dispatched on `kernel` alone, so a document declaring
+#: `spec: "obsign/receipt/v99"` -- a format whose claim boundary, whose params schema
+#: and whose output block nobody here has ever seen -- was interpreted under today's v1
+#: semantics and could be reported VERIFIED. Unknown format means "I do not know what
+#: these bytes mean", not "I will interpret them as whatever my current implementation
+#: does".
+RECEIPT_SPEC_V1 = "obsign/receipt/v1"
+
 
 def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
     """Run step 3 and return whether it permits a `verified` verdict.
@@ -41,97 +52,326 @@ def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
     result["signature"] = sig
     if sig["present"] and not sig["valid"]:
         notes.append(sig["detail"])
-    # An unattested `case` on an otherwise valid signature is not a refusal, but it
-    # must reach the reader: it is the block a court report prints first.
-    for key in sig.get("unbound_metadata") or []:
+    # Unattested out-of-claim data on an otherwise valid signature is not a refusal,
+    # but it must reach the reader. This iterated `unbound_metadata`, which is the
+    # hardcoded `("case",)` list -- so `env` and every `_`-prefixed key produced no
+    # note at all, and the producer stores its printed VERDICT in a `_`-prefixed key
+    # (`_combined_verdict`) exactly because it is outside the claim. The computed set
+    # is the one a reader needs.
+    for key in sig.get("unattested_metadata") or sig.get("unbound_metadata") or []:
         notes.append(f"{key!r} is present but NOT covered by the signature - "
                      f"unattested annotation, not an attested fact")
     return (not sig["present"]) or sig["valid"]
 
 
-#: Perturbations tried per input when probing liveness. Small, mixed sign and
-#: magnitude, so an input that only matters above some threshold is still caught.
-_LIVENESS_DELTAS = (1, -1, 7, -7, 1000, -1000, 1_000_000)
+#: Small absolute perturbations, mixed sign, tried first: an honest program usually
+#: moves on the very first one, so the cheap probes come before the expensive ones.
+_LIVENESS_DELTAS = (1, -1, 7, -7, 1000, -1000, 1_000_000, -1_000_000)
+
+#: Perturbations SCALED TO THE INPUT ITSELF. A fixed ladder can only exercise a
+#: program at the resolution of its largest step, so a computation coarser than that
+#: never moved and was reported "dead" -- an honest receipt refused, and accused of
+#: being "a constant dressed as a computation". Money held in cents and reported in
+#: hundreds of millions, a byte count reported in gigabytes, any bucketed or rounded
+#: figure: all of them ignore a delta of 1,000,000 and all of them are honest.
+_LIVENESS_FRACTIONS = (2, 8, 64, 1024)
+
+#: ...and perturbations scaled to the MACHINE, for the mirror-image case: an input
+#: whose own magnitude is small but which is multiplied up before it reaches the
+#: output, where a relative step is no bigger than the absolute one.
+_LIVENESS_SHIFTS = (20, 32, 48, 62)
+
+#: Replacements rather than deltas: the values a program is likeliest to treat
+#: specially, and the edges of the type.
+_LIVENESS_EDGES = (0, 1, -1)
 
 _I64_MIN = -(1 << 63)
 _I64_MAX = (1 << 63) - 1
 
 
+def _probe_values(x: int) -> list[int]:
+    """The values an input is re-run with, cheapest and likeliest first.
+
+    Absolute deltas alone cannot move a program whose output is coarser than the
+    largest of them; relative deltas alone cannot move a program whose input is zero.
+    Both families are here, plus the type's edges -- deduplicated, and clipped to
+    int64 because an ingest rejection says nothing about the program's use of the
+    value, so an out-of-range perturbation is dropped rather than counted.
+    """
+    seen = {x}
+    values: list[int] = []
+
+    def add(v: int) -> None:
+        if _I64_MIN <= v <= _I64_MAX and v not in seen:
+            seen.add(v)
+            values.append(v)
+
+    for d in _LIVENESS_DELTAS:
+        add(x + d)
+    magnitude = abs(x)
+    for f in _LIVENESS_FRACTIONS:
+        step = magnitude // f
+        if step:
+            add(x + step)
+            add(x - step)
+    for k in _LIVENESS_SHIFTS:
+        add(x + (1 << k))
+        add(x - (1 << k))
+    for v in _LIVENESS_EDGES:
+        add(v)
+    add(_I64_MAX)
+    add(_I64_MIN)
+    return values
+
+
+# What one unit of each kind of per-run work costs, in units of "zeroing one memory
+# cell" -- the cheapest thing a run does, and therefore the natural denominator.
+# These are ORDERS OF MAGNITUDE measured on the reference implementation, not
+# calibrated constants: re-validating an instruction (type checks, table lookup,
+# range checks per operand) is around 150x a cell store, executing one is around 60x,
+# and loading an input (bool check, isinstance, range check, store) around 16x. They
+# are rounded UP to powers of two, because under-charging is what turns a budget into
+# an amplifier and over-charging only costs a hostile receipt some probes.
+_COST_CELL = 1        # one zeroed memory cell
+_COST_INPUT = 16      # one input copied, type-checked and stored
+_COST_CONST = 8       # one constant re-validated
+_COST_CODE = 128      # one instruction re-validated
+_COST_STEP = 64       # one instruction executed
+
+#: The floor, in the same units: the budget a program gets however cheap it is, so a
+#: small constant program with many declared inputs is still swept exhaustively rather
+#: than reported "indeterminate" (which does not refuse). ~30 million cell-equivalents
+#: is well under a second of real work on the reference implementation -- and because
+#: the units track real cost, that stays true whichever dimension a hostile receipt
+#: inflates.
+_LIVENESS_FLOOR = 32_000_000
+
+
+def _probe_cost(prog: dict, n_inputs: int, steps: int) -> int:
+    """What ONE run of PROG costs the verifier -- all of it, not just what it retires.
+
+    The probe budget was denominated in VM steps, and steps are the one thing a probe
+    run need not spend. Before a program executes its first instruction,
+    `run_counted` allocates `mem` cells, re-runs `validate` over every instruction and
+    every constant, and copies and range-checks every declared input. A program that
+    HALTs immediately pays all of that and retires ONE step, so a 4,000,000-STEP
+    budget bought four million full machine instantiations: at the wire limit (2^20
+    declared inputs over a 2^20-cell machine -- a 2.1 MB receipt `load_receipt`
+    accepts) that is over a hundred hours of CPU from one file. It was spent before
+    integrity was ever trusted, so the receipt did not even have to be valid; a
+    1.7 KB one measured 8.0 s in Python and 14.0 s in Node against a 3.2 ms base run.
+
+    Charging the fixed cost is what makes the documented bound real: every probe run
+    costs at least what the base run cost, so "a small multiple of the base run"
+    becomes arithmetic rather than aspiration, in every dimension a receipt can
+    inflate -- memory, code length, constant pool, input count, steps.
+    """
+    return (steps * _COST_STEP
+            + prog["mem"] * _COST_CELL
+            + n_inputs * _COST_INPUT
+            + len(prog["code"]) * _COST_CODE
+            + len(prog["consts"]) * _COST_CONST)
+
+
 def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
-    """Does the output actually depend on the declared inputs?
+    """What evidence is there that the output depends on the declared inputs?
 
     A receipt proves "re-run this program on these inputs and you get this hash".
     That is empty if the program ignores the inputs: a two-instruction program that
     loads a constant and halts re-derives PERFECTLY and is signed and integral, yet
-    establishes nothing about the inputs it names. `--expect-program` does not help
-    -- the constant program has a perfectly good, pinnable digest. The only thing
-    that separates it from a real computation is that perturbing an input moves the
-    answer, and that is checkable here, on the VM already in hand, with no toolchain.
+    establishes nothing about the inputs it names.
 
-    This is an EXISTENCE PROOF, not a static approximation: find one input whose
-    change moves the output (or changes whether the program traps at all) and the
-    program demonstrably uses its inputs. Returns one of:
+    WHAT THIS CAN AND CANNOT ESTABLISH -- read before trusting a "live".
 
-        "live"          -- at least one input demonstrably affects the outcome
-        "dead"          -- EVERY input was fully probed and NONE affected it
-        "indeterminate" -- the probe budget ran out before proving either
+    Perturbing an input and watching the output move is EVIDENCE OF DEPENDENCE. It
+    is not, and cannot be, proof that the program computes the formula its name
+    claims. An adversary can always write
 
-    The verdict only ever REFUSES on "dead", and "dead" is only returned after every
-    input has been exercised within budget. An honest program is found live on its
-    first live input, so it costs about one extra run; only the attack -- a program
-    that genuinely ignores its inputs -- pays the full sweep, and such a program is
-    cheap by construction (it does no work). "indeterminate" never refuses: a
-    verifier must not reject an honest receipt merely because it was too expensive
-    to fully probe. Fail towards NOT accusing.
+        if inputs == this_quarter_exact_inputs:  return the number I want
+        else:                                    run the real formula
+
+    which behaves correctly under every perturbation anyone thinks to try. No
+    finite black-box probe closes that. The semantic boundary is an APPROVED
+    PROGRAM IDENTITY -- `--expect-program`, a digest a validator recorded after
+    READING the program -- and this probe is diagnostic evidence beneath it.
+
+    A TRAP IS NOT EVIDENCE OF DEPENDENCE. This once counted a trap on a perturbed
+    input as "live", reasoning that the value controls whether an output exists at
+    all. The attacker controls when the program traps, so that handed the
+    hardcoded-constant attack a way straight back through the check:
+
+        input a, b;  let ok = 0;
+        if a == 5 { if b == 7 { ok = 1; } }
+        let guard = 1 / ok;        // traps unless the inputs are the receipted ones
+        output 424242;             // ... and the output is a CONSTANT
+
+    Every probe perturbs, hits the guard, traps -- and the old probe called that
+    proof the constant depended on its inputs. A trap now says only that the
+    program REFUSED TO RUN, which is not information about the output, so it is
+    recorded as "guarded" and never as evidence.
+
+    A PERTURBATION MUST REACH THE SCALE OF THE THING IT PERTURBS. The ladder was
+    seven fixed absolute deltas, the largest 1,000,000, so any computation coarser
+    than that in its inputs' own units -- cents reported in hundreds of millions,
+    bytes reported in gigabytes, anything bucketed or rounded -- never moved, and was
+    REFUSED as a hardcoded constant. `_probe_values` therefore mixes deltas scaled to
+    the input, deltas scaled to the machine word, and the edges of the type.
+
+    "THE OUTPUT" IS NOT ONE NUMBER. The verdict above is about the output WINDOW, and
+    a window is a vector -- so a program whose reported figure is a hardcoded constant
+    passes it by appending one decoy cell that echoes an input:
+
+        input a, b;  output 424242, a + b;      // cell 0 is the "answer"
+
+    Every input is live (the vector moved), the receipt verifies, and a
+    docs/GRAPHS.md link that consumes `src_offset 0, length 1` carries the CONSTANT
+    down the chain while `obsign-verify --chain` prints "CHAIN VERIFIED - every node
+    re-derived, every link binds". So the sweep also records which output CELLS ever
+    moved, and graph.py refuses a link whose whole source slice is dead. The per-cell
+    answer only exists when the sweep was EXHAUSTIVE -- the per-input pass stops at
+    the first perturbation that moves anything, which proves that input live but says
+    nothing about a cell it did not happen to disturb, so a second pass finishes the
+    ladder (within the same budget) before any cell may be called dead.
+
+    Returns (verdict, per_input, per_cell). per_input[i] is one of:
+
+        "live"          -- some perturbation of input i MOVED the output
+        "guarded"       -- every perturbation of input i trapped; the program
+                           declined to run, so nothing was learned about the output
+        "dead"          -- input i was fully exercised and never moved the output
+        "indeterminate" -- the probe budget ran out on input i
+
+    and the overall verdict is "live" if any input is live, else "indeterminate" if
+    any is indeterminate, else "guarded" if any is guarded, else "dead".
+    per_cell[c] is "live", "dead" or "indeterminate" for output cell c.
+
+    Only "dead" and "guarded" refuse, and both are sound NEGATIVES: in each case
+    the run produced no evidence that any declared input reaches the output.
+    "indeterminate" never refuses -- a verifier must not reject an honest receipt
+    merely because it was expensive to probe. Fail towards not accusing.
 
     The probe is bounded so it can never be turned into a denial-of-service
     amplifier: total perturbation work is capped at a small multiple of the base
     run, plus a floor generous enough to fully sweep any cheap constant program.
+    Work is measured by `_probe_cost`, which counts what a run ACTUALLY costs --
+    counting only retired steps let a one-instruction program buy four million
+    machine instantiations for a budget of four million steps.
     """
     n = len(inputs)
     if n == 0:
-        return "n/a"  # a program with no declared inputs makes no claim about any
+        # A program with no declared inputs makes no claim about any -- and with
+        # nothing to perturb, nothing is known about its cells either.
+        return "n/a", [], ["indeterminate"] * len(base_out)
 
     # Cap ONE perturbation run, and cap the TOTAL. A single probe never runs longer
     # than the base did (plus a small floor for near-instant programs), so a program
     # that spins near its budget cannot make each probe expensive; and the total is a
-    # small multiple of the base, so the whole liveness pass adds at most a few times
-    # the verification cost it already paid. Both are what stop this being a DoS
-    # amplifier -- a hostile program is handed a bounded probe, not an open one.
+    # small multiple of the base COST -- not of the base step count, which a hostile
+    # program sets to one and leaves there. Both are what stop this being a DoS
+    # amplifier: a hostile program is handed a bounded probe, not an open one.
     per_run_cap = min(replaymod.MAX_STEPS, max(base_steps, 100_000))
-    total_budget = max(base_steps * 8, 4_000_000)
-    spent = 0
+    base_cost = _probe_cost(prog, n, base_steps)
+    total_budget = max(base_cost * 8, _LIVENESS_FLOOR)
 
+    cell_moved = [False] * len(base_out)   # which output cells any probe ever moved
+    state = {"spent": 0, "ran": False}     # budget spent; did ANY probe complete
+
+    def probe(i: int, value: int):
+        """Run with input i replaced. Returns "moved" | "same" | "trap" | None (budget
+        exhausted, nothing run). Records which cells moved whatever the answer is."""
+        if state["spent"] >= total_budget:
+            return None
+        trial = list(inputs)
+        trial[i] = value
+        try:
+            out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
+        except replaymod.Trap as trap:
+            # A refused run still cost the fixed per-run work, plus however many
+            # instructions it retired before refusing -- which the Trap carries.
+            # Charging the CAP instead over-bills an early trap enormously, and an
+            # over-billed budget runs out and reports "indeterminate", which does not
+            # refuse, in place of the "guarded" that does.
+            state["spent"] += _probe_cost(prog, n, getattr(trap, "steps", 0))
+            return "trap"
+        state["spent"] += _probe_cost(prog, n, used)
+        state["ran"] = True
+        if out == base_out:
+            return "same"
+        for c in range(min(len(out), len(cell_moved))):
+            if out[c] != base_out[c]:
+                cell_moved[c] = True
+        return "moved"
+
+    # ---- pass 1: the per-input verdict. Stops at the first perturbation that moves
+    # the output, because that is all it takes to establish dependence.
+    #
+    # The ladder for input i is built ONLY when there is budget left to spend on it.
+    # Building all of them up front is n * ~30 integers before a single probe runs, and
+    # `inputs` is attacker-controlled up to 2^20 -- the same "work nobody charged for"
+    # that `_probe_cost` exists to close, reintroduced in the bookkeeping.
+    tried = [0] * n
+    per_input: list[str] = []
     for i in range(n):
-        original = inputs[i]
-        for d in _LIVENESS_DELTAS:
-            probed = original + d
-            if probed < _I64_MIN or probed > _I64_MAX:
-                continue  # keep the perturbation a valid int64; an ingest rejection
-                          # is not evidence about the program's use of the value
-            if spent >= total_budget:
-                return "indeterminate"  # never refuse for want of budget
-            trial = list(inputs)
-            trial[i] = probed
-            try:
-                out, used = replaymod.run_counted(prog, trial, step_cap=per_run_cap)
-                spent += used
-                if out != base_out:
-                    return "live"  # the value moved the answer
-            except replaymod.Trap:
-                spent += per_run_cap  # unknown actual cost; charge the cap
-                # The inputs are all valid int64, so a Trap here came from the
-                # program's own guards or arithmetic (a domain guard, a row-count
-                # pin, a divide-by-zero): the value controls whether an output
-                # exists at all, which is dependence. Even a probe that only hit the
-                # per-run cap proves the perturbed run BEHAVES DIFFERENTLY from the
-                # base, which took fewer steps -- still dependence.
-                return "live"
+        if state["spent"] >= total_budget:
+            per_input.append("indeterminate")
+            continue
+        verdict_i = "dead"      # until a perturbation says otherwise
+        trapped = False
+        exhausted = False
+        for probed in _probe_values(inputs[i]):
+            outcome = probe(i, probed)
+            if outcome is None:
+                exhausted = True
+                break
+            tried[i] += 1
+            if outcome == "trap":
+                trapped = True  # the program declined to run: NOT evidence
+            elif outcome == "moved":
+                verdict_i = "live"   # the value moved the answer: real evidence
+                break
+        if verdict_i != "live":
+            # An exhausted budget is the weakest thing we can say, so it wins over
+            # "guarded"; both are weaker than a definite "dead", which requires
+            # every perturbation to have actually RUN and left the output alone.
+            verdict_i = ("indeterminate" if exhausted
+                         else ("guarded" if trapped else "dead"))
+        per_input.append(verdict_i)
 
-    return "dead"  # every input exercised within budget, none moved the outcome
+    # ---- pass 2: finish the ladder, for the CELL answer only. Pass 1's early stop is
+    # right for "does this input matter" and useless for "does this cell move": the
+    # perturbation that proved the input live may have moved a different cell entirely.
+    # A cell may only be called dead once every perturbation has actually been run.
+    swept = True
+    for i in range(n):
+        if state["spent"] >= total_budget:
+            swept = False
+            break
+        for probed in _probe_values(inputs[i])[tried[i]:]:
+            if probe(i, probed) is None:
+                swept = False
+                break
+        if not swept:
+            break
+
+    if state["ran"] and swept:
+        per_cell = ["live" if moved else "dead" for moved in cell_moved]
+    else:
+        # Nothing completed, or the ladder was cut short: no cell may be called dead.
+        per_cell = ["live" if moved else "indeterminate" for moved in cell_moved]
+
+    if "live" in per_input:
+        verdict = "live"
+    elif "indeterminate" in per_input:
+        verdict = "indeterminate"
+    elif "guarded" in per_input:
+        verdict = "guarded"
+    else:
+        verdict = "dead"
+    return verdict, per_input, per_cell
 
 
-def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
+def _verify_replay(receipt: dict, result: dict, notes: list,
+                   strict_liveness: bool = False) -> dict:
     """Re-derive a receipt whose computation travels inside it.
 
     Two things are checked that the fixed-kernel path does not need, and both exist
@@ -183,29 +423,79 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
                      f"recomputed {got[:16]}..")
 
     # Length rides outside the byte hash, exactly as shape/dtype do for the array
-    # kernel, so it is compared explicitly rather than trusted.
+    # kernel, so it is compared explicitly rather than trusted -- and it must BE a
+    # JSON integer. This read `declared.get("length") in (None, len(out))`, and `in`
+    # is `==`: Python says `True == 1` and `1.0 == 1`, so `"length": true` and
+    # `"length": 1.0` passed HERE over a one-element output while js/src/verify.js
+    # (`typeof declaredLen === 'bigint'`) and rust/src/verify.rs (`v.as_i64()`) both
+    # refused the same bytes. That is the split replay.py's `_struct_int` closed for
+    # the program's structural scalars -- "a forger hands the receipt to whichever
+    # implementation loads it" -- with the reference on the lenient side. A count is
+    # an integer; a boolean is not a count.
     declared = receipt.get("output") or {}
-    len_ok = declared.get("length") in (None, len(out))
+    declared_len = declared.get("length")
+    len_ok = declared_len is None or (
+        type(declared_len) is int and declared_len == len(out))
     if not len_ok:
         notes.append("output length does not match the re-executed result")
 
     # A re-derivation that does not depend on the inputs proves nothing about them.
-    # Only "dead" -- every declared input exercised and none moved the outcome --
-    # refuses; "indeterminate" (probe budget spent) never does.
-    liveness = _input_liveness(prog, inputs, out, base_steps)
+    # "dead" and "guarded" both refuse: in each case NOTHING was observed reaching
+    # the output from any declared input. "indeterminate" (probe budget spent) never
+    # refuses. A "live" is EVIDENCE, not a semantic guarantee -- see _input_liveness.
+    liveness, per_input, per_cell = _input_liveness(prog, inputs, out, base_steps)
     result["input_liveness"] = liveness
-    live_ok = liveness != "dead"
+    result["input_liveness_by_input"] = per_input
+    # Which output CELLS a perturbation ever moved. A whole-window verdict cannot see
+    # a constant hiding beside a decoy that echoes an input, and graph.py refuses a
+    # link whose source slice is entirely dead. See _input_liveness.
+    result["output_liveness_by_cell"] = per_cell
+    # THE DEFAULT ACCEPTS `indeterminate`, AND THE STRICT MODE DOES NOT.
+    #
+    # An expensive or cleverly constructed program can exhaust the probe budget and
+    # end with `input_liveness: "indeterminate"` and `verified: True` -- which is
+    # exactly what the default must do (a verifier that refused an honest receipt for
+    # being costly to probe would be accusing producers of forgery on a timing
+    # measurement) and exactly what an auditor of a regulated program must be able to
+    # switch off. `strict_liveness` demands a positive "live": nothing weaker, and
+    # "n/a" (a program declaring no inputs at all) is weaker.
+    live_ok = (liveness == "live") if strict_liveness else (
+        liveness not in ("dead", "guarded"))
+    if strict_liveness and liveness != "live":
+        notes.append(
+            f"--strict-liveness: input-liveness is {liveness!r} and only 'live' is "
+            f"accepted in strict mode - REFUSED without a positive demonstration "
+            f"that a declared input reaches the output")
     if liveness == "dead":
         notes.append(
             "the output does not depend on ANY declared input: every input was "
             "perturbed and the result never changed. This program ignores its "
             "inputs, so re-deriving it proves nothing about them -- a constant "
             "dressed as a computation. REFUSED.")
+    elif liveness == "guarded":
+        notes.append(
+            "no declared input was shown to reach the output, and the program "
+            "TRAPPED on every perturbation that did not. A program that refuses to "
+            "run on anything but its own receipted inputs yields no evidence that "
+            "those inputs produced this answer -- the shape of a hardcoded result "
+            "behind an equality guard. REFUSED.")
     elif liveness == "indeterminate":
         notes.append(
             "input-liveness probe hit its budget before proving dependence either "
             "way; not treated as a failure (a verifier must not refuse an honest "
             "receipt for being expensive to probe)")
+    if liveness == "live":
+        dark = [i for i, st in enumerate(per_input) if st != "live"]
+        dead_cells = [c for c, st in enumerate(per_cell) if st == "dead"]
+        notes.append(
+            "input-liveness is EVIDENCE, not proof: perturbing an input moved the "
+            "output, which shows dependence but cannot show the program computes "
+            "the formula its name claims. Pin an approved program digest "
+            "(--expect-program) for that."
+            + (f" Inputs {dark} were not shown to reach the output." if dark else "")
+            + (f" Output cells {dead_cells} never moved under ANY perturbation - a "
+               f"constant beside a live one still proves nothing about the constant."
+               if dead_cells else ""))
 
     sig_ok = _signature_gate(receipt, result, notes)
 
@@ -214,26 +504,108 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     return result
 
 
-def verify(receipt: dict) -> dict:
+def _program_digest(receipt: dict) -> str | None:
+    """The digest of the program this receipt actually carries, or None.
+
+    COMPUTED, never read out of `params.program_sha256`. The stated field is a
+    convenience a producer can get wrong and a forger can simply write: pinning
+    against it would let anyone claim the approved program by typing its digest into
+    the file beside a different program. The receipt's own `digest_ok` rung already
+    refuses a stated digest that disagrees with the computed one, so on any receipt
+    that could be verified the two are the same value -- and where they differ, this
+    is the one that means "the program that ran".
+    """
+    params = receipt.get("params")
+    if not isinstance(params, dict):
+        return None
+    prog = params.get("program")
+    if not isinstance(prog, dict):
+        return None
+    try:
+        return replaymod.program_sha256(prog)
+    except Exception:
+        return None
+
+
+def verify(receipt: dict, expect_program: str | None = None,
+           strict_liveness: bool = False) -> dict:
     """Run the ladder. Never raises on a hostile receipt.
 
     A verifier that crashes on malformed input has failed open in the eyes of
     whoever handed it the file: an exception is not a refusal.
+
+    `expect_program` PINS THE SEMANTIC BOUNDARY, and it lives here rather than in the
+    CLI. Re-derivation proves the output follows FROM THE PROGRAM; it cannot prove the
+    program computes what its name claims, and no finite black-box probe can (see
+    `_input_liveness`). A validator reads the program ONCE, approves it, and records
+    its digest; from then on the question is "did this re-derive from the program I
+    approved?". That was CLI post-processing in three implementations, which meant
+    every library caller -- every service that imports this package -- got the weaker
+    question and no field telling them so. `approved_program` is now part of the
+    result: None when no expectation was supplied, True/False when one was.
+
+    `strict_liveness` turns an `indeterminate` liveness verdict into a refusal. The
+    default is unchanged and still accepts it.
     """
     notes: list[str] = []
     result = {
         "integrity": False,
-        "reproduced": False,
+        # THREE-VALUED, AND THE REFERENCE WAS THE ONE IMPLEMENTATION THAT SAID SO
+        # ONLY IN ITS DOCUMENTATION. None means NOTHING WAS ATTEMPTED -- an
+        # unrecognised receipt spec, a kernel this verifier cannot execute, a receipt
+        # with no params -- which is a different fact from False ("it was re-derived
+        # and it did not match"). `js/src/verify.js` and `rust/src/verify.rs` both
+        # initialise to null/None and both document `reproduced: null`; this
+        # initialised to False, so on the same bytes a reader got `false` from the
+        # reference and `null` from both ports, and the three-way differential
+        # PROJECTED THE COLUMN AWAY (`d["reproduced"] is True`) rather than closing
+        # it. A softened column is a gate that cannot fail.
+        "reproduced": None,
         "signature": None,
         "verified": False,
+        # "this verifier does not implement this format" -- never "this is forged".
+        "unsupported": False,
+        # None means NO EXPECTATION WAS SUPPLIED, which is a different fact from False.
+        "approved_program": None,
         "notes": notes,
     }
+
+    def finish(res: dict) -> dict:
+        """Apply the approved-program pin, whichever rung returned.
+
+        It runs on EVERY path, including the ones that could not re-execute: a
+        receipt whose kernel this verifier cannot run is not thereby an approved
+        program, and returning `approved_program: None` there would read as "no
+        expectation was supplied" when one was.
+        """
+        if expect_program is None:
+            return res
+        actual = _program_digest(receipt)
+        res["approved_program"] = (actual == expect_program)
+        if not res["approved_program"]:
+            res["verified"] = False
+            notes.append(f"program is not the approved one: expected "
+                         f"{str(expect_program)[:16]}.., receipt carries "
+                         f"{str(actual)[:16]}..")
+        return res
 
     try:
         ok, detail = integrity(receipt)
         result["integrity"] = ok
         if not ok:
             notes.append(detail)
+
+        # THE FIRST DECISION IS THE FORMAT, AND IT COMES BEFORE KERNEL SELECTION.
+        # An unrecognised `spec` is not re-executed under v1 semantics and is not
+        # accused of anything either: nothing here knows what it claims. The signature
+        # gate still runs, because "who signed this file" is answerable without
+        # knowing what the file means -- but it can only ever attribute, never verify.
+        if receipt.get("spec") != RECEIPT_SPEC_V1:
+            notes.append(f"receipt spec {receipt.get('spec')!r} is not supported by "
+                         f"this verifier - UNSUPPORTED, not verified")
+            result["unsupported"] = True
+            _signature_gate(receipt, result, notes)
+            return finish(result)
 
         kernel = receipt.get("kernel")
 
@@ -243,20 +615,20 @@ def verify(receipt: dict) -> dict:
         # whole difference between a receipt a stranger can check and one they
         # cannot. See replay.py for why nondeterminism is not expressible there.
         if kernel == replaymod.SPEC:
-            return _verify_replay(receipt, result, notes)
+            return finish(_verify_replay(receipt, result, notes, strict_liveness))
 
         if kernel not in SUPPORTED_KERNELS:
             notes.append(f"kernel {kernel!r} cannot be re-executed by this verifier "
                          f"(supported: {', '.join(SUPPORTED_KERNELS)}) - "
                          f"NOT verified by re-derivation")
             _signature_gate(receipt, result, notes)
-            return result
+            return finish(result)
 
         params = receipt.get("params")
         if not isinstance(params, dict):
             notes.append("receipt carries no params; nothing to re-execute")
             _signature_gate(receipt, result, notes)
-            return result
+            return finish(result)
 
         inp = build_fixed_inputs(params)
 
@@ -292,8 +664,14 @@ def verify(receipt: dict) -> dict:
 
         result["verified"] = bool(result["integrity"] and result["reproduced"]
                                   and input_ok and shape_ok and dtype_ok and sig_ok)
-        return result
+        return finish(result)
     except Exception as exc:
         notes.append(f"verification error, treated as NOT verified: "
                      f"{type(exc).__name__}: {exc}")
-        return result
+        # The pin still gets an answer. Leaving `approved_program: None` here would
+        # read as "no expectation was supplied" to a caller that supplied one, which
+        # is the one thing this tri-state exists to keep apart.
+        try:
+            return finish(result)
+        except Exception:                    # never raise past this function
+            return result

@@ -1,0 +1,21 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found live in web/verify/verify-core.js, which carried no wire-format limits table at all -- no duplicate-member check, no MAX_DEPTH, no MAX_MEMBERS_PER_OBJECT, no MAX_INT_DIGITS, no MAX_STRING_BYTES, no MAX_RECEIPT_BYTES. This was the sharpest witness: `o[k] = value()` overwrote, the page canonicalised to {\"a\":2}, and it reported an integrity verdict on a document the other verifiers said did not exist. Written the other way round that is a forgery primitive -- the value a human reads first, the value the hash covers second, on the one screen whose job is telling a stranger what to believe.",
+  "id": "004-a-duplicate-object-member-is-refused-everywhere",
+  "note": "Last-value-wins is a parser convention, not a guarantee, and a document whose meaning depends on which reader opens it has no business being called canonical. Refused by every implementation, at every nesting level, whether or not the two values are equal.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "browser=load while both shipped parsers refuse",
+  "status": "agreed",
+  "text": "{\"a\":1,\"a\":2}"
+}

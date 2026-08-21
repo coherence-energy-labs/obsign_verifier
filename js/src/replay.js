@@ -35,7 +35,19 @@ const MAX_MEM = 1 << 20;
 const MAX_STEPS = 50_000_000;
 const MAX_CODE = 1 << 16;
 
-class Trap extends Error {}
+/** A refusal with a reason. `steps` is how many instructions had retired when the
+ * refusal happened -- 0 for a trap raised by `validate`, before execution started.
+ * Verifier-internal, exactly like `runCounted`'s count: a caller re-running a program
+ * many times must charge itself for a REFUSED run too, and the step cap is not what a
+ * trap on instruction three cost. Over-billing is not the safe direction -- it
+ * exhausts the liveness budget, and an exhausted budget reports 'indeterminate',
+ * which does not refuse, in place of the 'guarded' that does. */
+class Trap extends Error {
+  constructor(message, steps = 0) {
+    super(message);
+    this.steps = steps;
+  }
+}
 
 /** Wrap into int64. Forget this and a port disagrees on the first overflow. */
 function wrap(v) {
@@ -186,10 +198,12 @@ function programSha256(prog) {
   const wrapPlain = (v) => {
     if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
     if (typeof v === 'bigint') return { __n: 'i', v };
-    if (typeof v === 'number') {
-      if (!Number.isInteger(v)) return { __n: 'f', v };
-      return { __n: 'i', v: BigInt(v) };
-    }
+    // A Number reaching here is, by plain()'s documented invariant, a JSON FLOAT
+    // (integers arrive as BigInt). Re-typing the whole-valued ones to integer
+    // collapsed `1.0` into `1` -- the exact distinction the canonical form fixes
+    // as load-bearing -- so an honest receipt whose program contained 1.0 got a
+    // digest this implementation alone computed, and was called tampered.
+    if (typeof v === 'number') return { __n: 'f', v };
     if (Array.isArray(v)) return v.map(wrapPlain);
     const m = new Map();
     for (const k of Object.keys(v)) m.set(k, wrapPlain(v[k]));
@@ -234,6 +248,7 @@ function runCounted(prog, inputs, stepCap) {
 
   let pc = 0;
   let steps = 0;
+  try {
   for (;;) {
     if (steps >= budget) throw new Trap(`step budget exhausted after ${budget} steps`);
     steps++;
@@ -291,6 +306,11 @@ function runCounted(prog, inputs, stepCap) {
       else v = a >= b ? 1n : 0n;   // GE -- the table is exhaustive
       mem[ins[1]] = v;
     }
+  }
+  } catch (e) {
+    // A trap that happened DURING execution carries the count out with it.
+    if (e instanceof Trap) e.steps = steps;
+    throw e;
   }
 
   const outOff = Number(prog.output.offset);

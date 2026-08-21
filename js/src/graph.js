@@ -73,7 +73,14 @@ const placeholder = (key, note) => ({
 
 /** Verify RECEIPTS (boxed, as loadReceipt returns them) individually and
  * transitively. Never throws on hostile input. */
-function verifyGraph(receipts) {
+/**
+ * Verify RECEIPTS individually and transitively.
+ *
+ * `strictLiveness` is the same switch `verify` takes, and it reaches BOTH rungs of the
+ * chain: each node's standalone ladder, and the rule below that asks whether the slice
+ * a link carries was ever shown to move.
+ */
+function verifyGraph(receipts, strictLiveness = false) {
   const graphNotes = [];
   const nodes = new Map();       // digest -> {receipt, receiptPlain, envelopes, verified, ...}
   const canon = new Map();       // digest -> canonical claim string (collision check)
@@ -132,8 +139,10 @@ function verifyGraph(receipts) {
     // so the verdict is the conjunction over the documents actually supplied, and one
     // hostile copy cannot hide behind an honest one.
     node.verified = true;
+    let first = true;
     for (const key of [...node.envelopes.keys()].sort()) {
-      const res = verify(node.envelopes.get(key));
+      const res = verify(node.envelopes.get(key), null, strictLiveness);
+      if (first) { node.standalone = res; first = false; }
       if (res.verified !== true) {
         node.verified = false;
         node.notes.push('does not verify standalone: ' + (res.notes || []).slice(0, 2).join('; '));
@@ -224,6 +233,47 @@ function verifyGraph(receipts) {
       if (!equal) {
         node.linksOk = false;
         node.notes.push(`inputs[${d}..${d + L}) do not equal the child's re-derived output[${s}..${s + L}) -- this receipt did NOT consume what ${childDigest.slice(0, 16)}.. produced`);
+        continue;
+      }
+      // THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS. verify()
+      // refuses a node whose whole output ignores every declared input; an output
+      // window is a VECTOR, so `output 424242, a + b;` passes that and then links only
+      // cell 0, carrying a hardcoded constant down a chain that prints CHAIN VERIFIED.
+      //
+      // THE SLICE VERDICT IS THREE-VALUED, BECAUSE THE CELL VERDICT IS.
+      //
+      // This read `every(st === 'dead')`, and a cell the probe ran out of budget on is
+      // 'indeterminate', not 'dead' -- so the rule was switchable off by the party it
+      // constrains. The same child program with ONE constant changed (a spin loop long
+      // enough to cut the cell sweep short) moved its laundered cell from 'dead' to
+      // 'indeterminate', and a chain carrying a literal went from REFUSED to
+      // graph_verified. Cost decided it, not evidence.
+      //
+      //   any cell live -> the link binds something that demonstrably moved
+      //   else any indeterminate (or the slice is not covered) -> INCOMPLETE
+      //   else all dead -> FORGED
+      //
+      // 'incomplete' is what this graph already says for "a child was not supplied":
+      // out of green without calling the producer a forger, which is right for an
+      // honest receipt too expensive to sweep. Under strict liveness there is no such
+      // benefit of the doubt.
+      const cells = (nodes.get(childDigest).standalone || {}).output_liveness_by_cell || [];
+      const sliceStates = cells.slice(s, s + L);
+      const covered = sliceStates.length === L;
+      if (covered && sliceStates.length && sliceStates.every((st) => st === 'dead')) {
+        node.linksOk = false;
+        node.notes.push(`link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. never moved under ANY perturbation of that receipt's inputs: the values this link carries are constants, so the chain proves nothing about them however well every node re-derives`);
+      } else if (!covered || !sliceStates.some((st) => st === 'live')) {
+        const why = covered
+          ? 'the probe hit its budget before deciding these cells'
+          : "the probe's cell verdict does not cover this slice";
+        if (strictLiveness) {
+          node.linksOk = false;
+          node.notes.push(`--strict-liveness: link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. was never shown to move under ANY perturbation (${why}) - REFUSED without a positive demonstration that the values this link carries are derived`);
+        } else {
+          if (node.linksOk === true) node.linksOk = 'incomplete';
+          node.notes.push(`link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. was not shown to depend on that receipt's inputs (${why}), so the chain does not establish that these values were computed rather than hardcoded -- incomplete, not forged`);
+        }
       }
     }
   }
@@ -233,23 +283,39 @@ function verifyGraph(receipts) {
   const WHITE = 0, GREY = 1, BLACK = 2;
   const color = new Map([...nodes.keys()].map((d) => [d, WHITE]));
   const order = [];
-  const dfs = (digest) => {
-    color.set(digest, GREY);
-    const rp = nodes.get(digest).receiptPlain;
-    for (const ln of rp ? linksOf(rp) : []) {
-      const child = ln && ln.receipt_sha256;
-      if (nodes.has(child)) {
+  // ITERATIVE, because the depth used to be the length of the chain the SUPPLIER
+  // chose: ~20,000 linked receipts of 200 bytes each threw `RangeError: Maximum call
+  // stack size exceeded` out of a function whose whole contract is that a hostile
+  // graph is REFUSED, not fatal. Visit order, finish order and the cycle rule are
+  // unchanged; only the stack moved from the engine's to ours.
+  const dfs = (start) => {
+    color.set(start, GREY);
+    const stack = [[start, 0]];
+    while (stack.length) {
+      const frame = stack.pop();
+      const digest = frame[0];
+      const i = frame[1];
+      const rp = nodes.get(digest).receiptPlain;
+      const links = rp ? linksOf(rp) : [];
+      if (i >= links.length) {
+        color.set(digest, BLACK);
+        order.push(digest);
+        continue;
+      }
+      stack.push([digest, i + 1]);
+      const ln = links[i];
+      const child = ln && typeof ln.receipt_sha256 === 'string' ? ln.receipt_sha256 : null;
+      if (child !== null && nodes.has(child)) {
         if (color.get(child) === GREY) {
           graphNotes.push(`CYCLE through ${String(child).slice(0, 16)}.. -- refused`);
           nodes.get(digest).linksOk = false;
           nodes.get(child).linksOk = false;
         } else if (color.get(child) === WHITE) {
-          dfs(child);
+          color.set(child, GREY);
+          stack.push([child, 0]);
         }
       }
     }
-    color.set(digest, BLACK);
-    order.push(digest);
   };
   for (const d of nodes.keys()) {
     if (color.get(d) === WHITE) dfs(d);

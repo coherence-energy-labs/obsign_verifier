@@ -224,6 +224,7 @@ def test_fuzzed_graphs_reach_identical_verdicts_in_python_and_javascript():
     try:
         tmp.write_text(_json.dumps(cases), encoding="utf-8")
         proc = subprocess.run(["node", str(_JS_RUNNER), str(tmp)],
+                              encoding="utf-8",
                               capture_output=True, text=True, timeout=300, check=False)
     finally:
         tmp.unlink(missing_ok=True)

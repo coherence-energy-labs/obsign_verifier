@@ -1,0 +1,68 @@
+{
+  "spec": "obsign/receipt/v1",
+  "kernel": "obsign/replay/1",
+  "params": {
+    "program": {
+      "spec": "obsign/replay/1",
+      "mem": 4,
+      "steps": 100,
+      "consts": [
+        1
+      ],
+      "input": {
+        "offset": 0,
+        "length": 1
+      },
+      "output": {
+        "offset": 2,
+        "length": 1
+      },
+      "code": [
+        [
+          "LOADC",
+          1,
+          0
+        ],
+        [
+          "ADD",
+          2,
+          0,
+          1
+        ],
+        [
+          "HALT"
+        ]
+      ]
+    },
+    "program_sha256": "06a4ebfd55d1865f55867f667afd243a19d73ee9286adc5a288320ee075a75de",
+    "inputs": [
+      41
+    ]
+  },
+  "output": {
+    "dtype": "int64",
+    "length": 1,
+    "sha256": "ed049108bc18f2c64369e8d0ea42850bdd1a7d1dd340cfde716315579702a76c"
+  },
+  "receipt_sha256": "381566a463ab852cdddafcaa093a43a3be42f0ddb4c968fa1a1da6cafaaa70f2",
+  "signature": {
+    "alg": "ed25519",
+    "public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "signer": "A. Chen",
+    "sig": "17afe883d92a7a8d75c070a70579b37df6a226cf80c8b08ef6de948fe44f9e3a7910c46d958097eef10b7361306e19c4fcf0fa10d46d4192fd1a1bb519cf7e01"
+  },
+  "_conformance": {
+    "note": "The same signature with no `spec` member at all. Receipts minted before the field existed are real and must not stop working, so an ABSENT spec is the historical v1 envelope -- valid, and attributing nobody.",
+    "expect": {
+      "verified": true,
+      "unsupported": false,
+      "signature_present": true,
+      "signature_valid": true,
+      "signature_unsupported": false,
+      "identity_bound": false,
+      "attributed_signer": null,
+      "reproduced": true,
+      "requires_crypto": true
+    }
+  }
+}

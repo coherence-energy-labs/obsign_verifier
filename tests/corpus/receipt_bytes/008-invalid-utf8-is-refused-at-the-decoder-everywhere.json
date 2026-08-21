@@ -1,0 +1,22 @@
+{
+  "bytes_base64": "eyJhIjoi/yJ9",
+  "decode": "utf-8-strict",
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse-at-decode",
+    "rust": "refuse-at-decode"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found as a three-way split at the file-reading seam, one level ABOVE every limit any parser checks. Python and Rust refused at the decoder; the npm CLI and the verify page both substituted U+FFFD and went on to verify the result, so three distinct files shared one claim hash (c856f23670aa3692..) in the two implementations a stranger is most likely to reach. Both JavaScript sides now decode strictly.",
+  "id": "008-invalid-utf8-is-refused-at-the-decoder-everywhere",
+  "note": "A single 0xFF inside a string value. Every implementation refuses it, and each refuses at the DECODER rather than at any wire-format limit: Python's CLI raises UnicodeDecodeError out of path.read_text(encoding='utf-8') before load_receipt is called, the Rust CLI reports 'cannot read: stream did not contain valid UTF-8' and exits non-zero, and both JavaScript parsers now say 'receipt is not valid UTF-8'. A receipt is a UTF-8 document; these bytes are not one.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse-at-decode",
+    "rust": "refuse-at-decode"
+  },
+  "signature": "decode=utf-8 browser=replacement-char",
+  "status": "agreed"
+}

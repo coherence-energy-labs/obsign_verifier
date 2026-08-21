@@ -1,0 +1,27 @@
+{
+  "expected": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "found_by": "tests/fuzz_receipt_bytes.py via tests/test_receipt_byte_differential.py",
+  "history": "Found live in the verify page, whose parseReceipt recursed with no depth counter until V8 stopped it with an uncaught RangeError -- reachable by pasting a file, and stable from about 8,000 levels up. The same file had already learned this lesson once: 'pasting the literal null took the verify page down' is a comment in it. Now bounded at the same depth as the others.",
+  "id": "005-deep-nesting-is-refused-rather-than-crashing-the-parser",
+  "note": "20,000 open brackets. Every implementation REFUSES -- with a diagnosis, not a stack trace. A crash is not a refusal: canonical.py catches CPython's RecursionError at this seam and re-raises it as a WireFormatError precisely because 'a verifier that crashes on hostile input has failed open in the eyes of whoever handed it the file'.",
+  "observed": {
+    "browser": "refuse",
+    "npm": "refuse",
+    "python": "refuse",
+    "rust": "refuse"
+  },
+  "signature": "browser=crash while both shipped parsers refuse",
+  "status": "agreed",
+  "text_repeat": {
+    "after": "}",
+    "after_unit": "]",
+    "before": "{\"a\":",
+    "count": 20000,
+    "unit": "["
+  }
+}

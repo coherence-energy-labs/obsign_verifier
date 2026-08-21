@@ -1,0 +1,14 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "The residual of 008, and the reason 008's fix needed a second pass. Moving MAX_MEM into parse_program closed almost everything, but the guard compared the declared LENGTH against MAX_MEM while codegen counted the cells the program actually needs -- so lengths of exactly 1048575 and 1048576 parsed and then failed in codegen, a two-wide band where interpret_source would still allocate a million cells for a program the compiler would not build. A guard that measures the wrong quantity closes every case except the ones where the difference between the two quantities is what matters. Now both count the same thing.",
+  "id": "009-an-array-length-at-the-memory-limit-is-refused-by-both-lowerings",
+  "note": "Exactly MAX_MEM. A program declaring an array of 1048576 cells also needs a cell for its input and one for its output window, so the total is over the limit and both lowerings refuse it -- at parse, before either runs. 1048574 still compiles, which is the point of pinning this from both sides: the boundary is the TOTAL cell count, not the declared length.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "CodegenError"
+  },
+  "signature": "oracle-accepts compiler-refuses: CodegenError: program needs N cells, over the N limit",
+  "source": "input a; arr m[1048576]; output a;",
+  "status": "agreed"
+}

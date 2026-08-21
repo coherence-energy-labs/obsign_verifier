@@ -1,0 +1,4 @@
+# Build artifacts. `Cargo.lock` is NOT ignored: the crate has zero dependencies, so the
+# lock file is three lines and committing it is what makes "no supply chain" checkable
+# rather than asserted.
+target/

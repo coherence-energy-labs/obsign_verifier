@@ -81,9 +81,18 @@ def _placeholder(key: str, note: str) -> dict:
             "envelopes": {key.encode("utf-8"): None}}
 
 
-def verify_graph(receipts: list) -> dict:
+def verify_graph(receipts: list, strict_liveness: bool = False) -> dict:
     """Verify RECEIPTS individually and transitively. Never raises on hostile input --
-    an exception is not a refusal, on a graph exactly as on a single receipt."""
+    an exception is not a refusal, on a graph exactly as on a single receipt.
+
+    `strict_liveness` is the same switch `verify` takes, and it reaches BOTH rungs of
+    the chain: each node's standalone ladder, and the rule below that asks whether the
+    slice a link carries was ever shown to move. It used not to reach either --
+    cli.py called `verify_graph(receipts)` with no argument, so `--chain
+    --strict-liveness` parsed the flag, printed nothing different and accepted exactly
+    what `--chain` accepted. A switch an auditor sets and a verifier ignores is worse
+    than one that does not exist: it reports a strictness that was never applied.
+    """
     graph_notes: list[str] = []
     nodes: dict[str, dict] = {}          # digest -> {"receipt", "envelopes", "verified", ...}
     canon_bytes: dict[str, bytes] = {}   # digest -> canonical claim bytes (collision check)
@@ -139,7 +148,8 @@ def verify_graph(receipts: list) -> dict:
         # "every node verifies standalone", and a receipt deduped away never ran the
         # ladder at all -- so the node's verdict is the conjunction over the documents
         # actually supplied, and one hostile copy cannot hide behind an honest one.
-        results = [verify(node["envelopes"][k]) for k in sorted(node["envelopes"])]
+        results = [verify(node["envelopes"][k], strict_liveness=strict_liveness)
+                   for k in sorted(node["envelopes"])]
         node["verified"] = all(bool(res.get("verified")) for res in results)
         node["standalone"] = results[0]
         for res in results:
@@ -236,12 +246,105 @@ def verify_graph(receipts: list) -> dict:
                     f"inputs[{d}..{d + ln_len}) do not equal the child's re-derived "
                     f"output[{s}..{s + ln_len}) -- this receipt did NOT consume what "
                     f"{child_digest[:16]}.. produced")
+                continue
+            # THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS.
+            #
+            # verify() refuses a node whose whole output ignores every declared input.
+            # An output window is a VECTOR, so that check is passed by appending one
+            # decoy cell -- `output 424242, a + b;` -- and then linking only cell 0:
+            # every input is live, the node verifies, and a hardcoded constant travels
+            # the chain under "CHAIN VERIFIED - every node re-derived, every link
+            # binds". The same rule, applied to the slice the link actually carries,
+            # closes it.
+            #
+            # THE SLICE VERDICT IS THREE-VALUED, BECAUSE THE CELL VERDICT IS.
+            #
+            # This read `all(st == "dead")`, and a cell the probe ran out of budget on
+            # is "indeterminate", not "dead". So the rule was switchable off by the
+            # party it constrains: the same child program with ONE constant changed --
+            # a spin loop long enough to cut the cell sweep short -- moved its
+            # laundered cell from `dead` to `indeterminate`, and a chain carrying the
+            # literal 424242 went from REFUSED to `graph_verified: true`. Cost, not
+            # evidence, decided it.
+            #
+            #   any cell live  -> the link binds something that demonstrably moved
+            #   else any indeterminate (or the probe did not cover the slice)
+            #                  -> INCOMPLETE: not forged, not established either
+            #   else all dead  -> FORGED: the values are constants
+            #
+            # `incomplete` is the verdict this graph already uses for "a child was not
+            # supplied": it keeps the chain out of green without calling the producer
+            # a forger, which is exactly right for an honest receipt too expensive to
+            # sweep. Under --strict-liveness there is no such benefit of the doubt.
+            cells = (child.get("standalone") or {}).get("output_liveness_by_cell") or []
+            slice_states = cells[s:s + ln_len]
+            covered = len(slice_states) == ln_len
+            if covered and slice_states and all(st == "dead" for st in slice_states):
+                node["links_ok"] = False
+                node["notes"].append(
+                    f"link source output[{s}..{s + ln_len}) of {child_digest[:16]}.. "
+                    f"never moved under ANY perturbation of that receipt's inputs: the "
+                    f"values this link carries are constants, so the chain proves "
+                    f"nothing about them however well every node re-derives")
+            elif not any(st == "live" for st in slice_states) or not covered:
+                why = ("the probe's cell verdict does not cover this slice"
+                       if not covered else
+                       "the probe hit its budget before deciding these cells")
+                if strict_liveness:
+                    node["links_ok"] = False
+                    node["notes"].append(
+                        f"--strict-liveness: link source output[{s}..{s + ln_len}) of "
+                        f"{child_digest[:16]}.. was never shown to move under ANY "
+                        f"perturbation ({why}) - REFUSED without a positive "
+                        f"demonstration that the values this link carries are derived")
+                else:
+                    if node["links_ok"] is True:
+                        node["links_ok"] = "incomplete"
+                    node["notes"].append(
+                        f"link source output[{s}..{s + ln_len}) of "
+                        f"{child_digest[:16]}.. was not shown to depend on that "
+                        f"receipt's inputs ({why}), so the chain does not establish "
+                        f"that these values were computed rather than hardcoded -- "
+                        f"incomplete, not forged")
 
-    def dfs(digest: str) -> None:
-        color[digest] = GREY
-        r = nodes[digest]["receipt"]
-        for ln in _links_of(r) if isinstance(r, dict) else []:
-            child = ln.get("receipt_sha256") if isinstance(ln, dict) else None
+    def _named_child(ln) -> str | None:
+        """The digest a link names, or None if it does not name one.
+
+        `nodes` is a dict, so `child in nodes` needs a HASHABLE child -- and a link is
+        attacker-supplied JSON, where `receipt_sha256` can be an array or an object.
+        One 250-byte receipt carrying `"receipt_sha256": []` raised
+        `TypeError: unhashable type: 'list'` straight out of this function, which
+        promises never to raise. `_well_formed_link` already refuses that shape, but
+        only `check_links` consulted it; the reachability walk read the raw value.
+        """
+        if not isinstance(ln, dict):
+            return None
+        child = ln.get("receipt_sha256")
+        return child if isinstance(child, str) else None
+
+    def dfs(start: str) -> None:
+        """Iterative depth-first walk.
+
+        This was recursive, so its depth was the length of the chain WHOEVER HANDED
+        YOU THE SET chose: about 2,000 linked receipts of 200 bytes each raised
+        RecursionError, and `obsign-verify --chain` turned that into a traceback and
+        an exit code that means "crashed" rather than "refused". rust/src/graph.rs
+        already walks with an explicit stack, and says why: "a stack overflow is a
+        crash rather than a refusal". The visit order, the finish order and the cycle
+        rule are unchanged -- only the stack moved from the interpreter's to ours.
+        """
+        color[start] = GREY
+        stack: list[tuple[str, int]] = [(start, 0)]
+        while stack:
+            digest, i = stack.pop()
+            r = nodes[digest]["receipt"]
+            links = _links_of(r) if isinstance(r, dict) else []
+            if i >= len(links):
+                color[digest] = BLACK
+                order.append(digest)
+                continue
+            stack.append((digest, i + 1))
+            child = _named_child(links[i])
             if child in nodes:
                 if color[child] == GREY:
                     graph_notes.append(f"CYCLE through {child[:16]}.. -- a receipt "
@@ -249,9 +352,8 @@ def verify_graph(receipts: list) -> dict:
                     nodes[digest]["links_ok"] = False
                     nodes[child]["links_ok"] = False
                 elif color[child] == WHITE:
-                    dfs(child)
-        color[digest] = BLACK
-        order.append(digest)
+                    color[child] = GREY
+                    stack.append((child, 0))
 
     for digest in nodes:
         check_links(digest)
@@ -260,9 +362,10 @@ def verify_graph(receipts: list) -> dict:
             dfs(digest)
 
     # ---- roots: nodes nothing supplied links to (for display; not a verdict input)
-    referenced = {ln.get("receipt_sha256")
+    referenced = {child
                   for n in nodes.values() if isinstance(n["receipt"], dict)
-                  for ln in _links_of(n["receipt"]) if isinstance(ln, dict)}
+                  for ln in _links_of(n["receipt"])
+                  if (child := _named_child(ln)) is not None}
     roots = [d for d in nodes if d not in referenced]
 
     complete = not missing

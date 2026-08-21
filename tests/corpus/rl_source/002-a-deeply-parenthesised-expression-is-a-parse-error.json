@@ -1,0 +1,20 @@
+{
+  "found_by": "tests/fuzz_rl_source.py via tests/test_rl_source_differential.py",
+  "history": "Found as a CRASH at EIGHTY-TWO nested parentheses. _bin walks eight precedence tiers, so each level of nesting cost eight Python frames plus _unary and _primary against a default recursion limit of 1000, and the RecursionError escaped as a crash. canonical.py treats exactly this failure as a defect and converts it -- json.loads' RecursionError becomes a WireFormatError -- while the compiler front end had no equivalent and the grammar stated no nesting limit to refuse against. Now it states one.",
+  "id": "002-a-deeply-parenthesised-expression-is-a-parse-error",
+  "note": "Expression nesting is bounded and the bound is diagnosed. 47 levels compile; 48 and beyond are refused.",
+  "observed": {
+    "compile": "refuse",
+    "parse": "refuse",
+    "refusal": "ParseError"
+  },
+  "source_repeat": {
+    "after": ";",
+    "after_unit": ")",
+    "before": "input a; output ",
+    "count": 82,
+    "middle": "a",
+    "unit": "("
+  },
+  "status": "agreed"
+}

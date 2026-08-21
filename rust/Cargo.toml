@@ -1,0 +1,26 @@
+[package]
+name = "obsign-verify"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.70"
+license = "Apache-2.0"
+description = "Re-derive an Obsign receipt's claim on your own machine, offline. Third implementation, written from the specification."
+repository = "https://github.com/coherence-energy-labs/obsign_verifier"
+
+# NO DEPENDENCIES, INCLUDING FOR CRYPTOGRAPHY. The point of a third implementation is
+# to be auditable end to end by one person in an afternoon; a dependency tree defeats
+# that before the reader reaches the first opcode. SHA-256, SHA-512 and Ed25519
+# verification are in `sha2.rs` and `ed25519.rs`, each held against the other two
+# implementations by the differential harness rather than trusted.
+[dependencies]
+
+[lib]
+name = "obsign_verify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "obsign-verify-rs"
+path = "src/bin/obsign_verify_rs.rs"
+
+[profile.release]
+overflow-checks = true   # wrapping is spelled `wrapping_*`; an implicit wrap is a bug

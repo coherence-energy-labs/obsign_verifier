@@ -23,10 +23,28 @@
  */
 
 const crypto = require('node:crypto');
-const { canonicalSha256, integrity, isObj } = require('./canonical.js');
+const { canonicalSha256, claimOf, integrity, isObj } = require('./canonical.js');
 
 /** Only Ed25519 today. An unknown algorithm is UNVERIFIED, never "fine". */
 const SUPPORTED_ALGS = new Set(['ed25519']);
+
+/**
+ * The two signature envelopes this verifier knows how to read, and NOTHING ELSE.
+ *
+ * THE FALL-THROUGH THAT USED TO BE HERE IS THE DEFECT. The dispatch read
+ * `if (spec === SIG_SPEC_V2) {...} else { legacy v1 }`, so `obsign/signature/v9` -- a
+ * spec this code has never seen, whose covered attribute set nobody here can
+ * enumerate -- was verified under the WEAKEST envelope the format has ever had: v1
+ * signs the bare `receipt_sha256` and covers neither the signer nor the case block.
+ * An unknown future version must never inherit that.
+ *
+ * An ABSENT spec (or a JSON `null`) still means v1, because receipts minted before
+ * the field existed are real and still verify. A spec that is present and
+ * unrecognised -- including one that is not a string at all -- is `unsupported`.
+ */
+const SIG_SPEC_V1 = 'obsign/signature/v1';
+const SIG_SPEC_V2 = 'obsign/signature/v2';
+const SUPPORTED_SIG_SPECS = new Set([SIG_SPEC_V1, SIG_SPEC_V2]);
 
 /**
  * The v2 message is the domain tag followed by the canonical hash of the covered
@@ -45,6 +63,32 @@ const SIG_DOMAIN_V2 = Buffer.concat([
 
 /** Keys outside the claim hash that are still presented as fact. Must match Python. */
 const OUT_OF_CLAIM_FACT = ['case'];
+
+/** Structural keys: the hash and the signature themselves, never "metadata". */
+const STRUCTURAL = new Set(['receipt_sha256', 'signature']);
+
+/**
+ * Every key PRESENT in the receipt that the claim hash does not cover and the
+ * signature does not bind. COMPUTED, never enumerated -- the port of Python's
+ * `unattested_keys`.
+ *
+ * `OUT_OF_CLAIM_FACT` names `case` and nothing else, so `env` and every
+ * `_`-prefixed key rode outside both the claim hash and the signature with no
+ * mention at all. The producer stores its printed VERDICT in a `_`-prefixed key
+ * (`_combined_verdict`) precisely because it is outside the claim, so on a
+ * genuine, valid, identity-bound report the sentence a reader acts on could be
+ * rewritten by anyone with a text editor while this verifier said nothing.
+ */
+function unattestedKeys(receipt, bound) {
+  const claim = claimOf(receipt).__obj;
+  const isBound = new Set(bound || []);
+  const out = [];
+  for (const k of receipt.__obj.keys()) {
+    if (claim.has(k) || STRUCTURAL.has(k) || isBound.has(k)) continue;
+    out.push(k);
+  }
+  return out.sort();
+}
 
 /** Raw Ed25519 public key -> SPKI DER, which is what `createPublicKey` accepts. */
 const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
@@ -94,12 +138,36 @@ function str(map, key) {
   return typeof v === 'string' ? v : null;
 }
 
+/** A short, SAFE rendering of an attacker-supplied JSON value, for a detail message.
+ *
+ * `JSON.stringify` is not safe here: the parse tree carries JSON integers as BigInt
+ * inside a `{__n}` wrapper, and `JSON.stringify` THROWS on a BigInt -- out of a
+ * function whose contract is that it never throws. So the shape is named rather than
+ * serialised, except for the string case, which is the only one a reader needs
+ * quoted. */
+function describe(v) {
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (v === null) return 'null';
+  if (typeof v === 'boolean') return String(v);
+  if (v && typeof v === 'object' && '__n' in v) return `<number ${String(v.v)}>`;
+  if (Array.isArray(v)) return '<array>';
+  if (v && v.__obj instanceof Map) return '<object>';
+  return `<${typeof v}>`;
+}
+
 /** Step 3 of the ladder. Returns a plain object; never throws. */
 function check(receipt) {
   const out = {
     present: false, valid: false, identity_bound: false,
+    // True only when the envelope names a spec this verifier does not implement.
+    // Distinct from `valid: false`, which means "I read it and it does not hold";
+    // this means "I did not read it, and nothing here is a verdict about it".
+    unsupported: false,
     attributed_signer: null, claimed_signer: null, detail: '',
     bound_metadata: [], unbound_metadata: [],
+    // the COMPUTED set (see unattestedKeys); `unbound_metadata` stays the
+    // `case`-shaped answer the wire format and the other ports already carry
+    unattested_metadata: [],
   };
 
   const sigv = receipt.__obj.get('signature');
@@ -119,13 +187,44 @@ function check(receipt) {
     return out;
   }
 
-  const alg = (str(sig, 'alg') || '').toLowerCase();
-  if (!SUPPORTED_ALGS.has(alg)) {
+  // THE ALGORITHM TOKEN IS EXACT, NOT NORMALIZED. This lower-cased before
+  // comparing, so "ED25519" was accepted here and called unsupported by the
+  // producer and the browser verifier, which both compare the exact token. The
+  // value is inside the SIGNED attribute set, so this is not display formatting:
+  // it is one implementation verifying a receipt another refuses. `sig` is
+  // attacker-supplied, so reading it without coercion also means a number,
+  // object, or null simply is not the token rather than throwing past a caller
+  // this function promises never to throw to.
+  const alg = sig.get('alg');
+  if (typeof alg !== 'string' || !SUPPORTED_ALGS.has(alg)) {
     out.detail = `unsupported algorithm '${alg}' - UNVERIFIED, not accepted`;
     return out;
   }
 
-  const sigHex = str(sig, 'sig') || str(sig, 'signature');
+  // THE SPEC IS DECIDED BEFORE ANY OF THE BYTES IT DESCRIBES ARE READ.
+  //
+  // `sig`, `public_key` and `binds_sha256` only MEAN anything relative to a spec that
+  // says what the signature covers. Read RAW, not through `str()`: a non-string spec
+  // read as null would be indistinguishable from an absent one and would inherit v1.
+  const specRaw = sig.get('spec');
+  const spec = (specRaw === undefined || specRaw === null) ? null : specRaw;
+  if (spec !== null && !(typeof spec === 'string' && SUPPORTED_SIG_SPECS.has(spec))) {
+    out.unsupported = true;
+    out.detail = `unsupported signature spec ${describe(spec)}`
+      + ' - UNVERIFIED, not accepted';
+    return out;
+  }
+
+  // ONE SPELLING PER FIELD. This read `str(sig,'sig') || str(sig,'signature')`, and a
+  // synonym fallback in a security envelope is a forgery primitive: a non-STRING
+  // `sig` made `str()` return null, so `{"sig": 5, "signature": "<valid 128-hex>"}`
+  // fell through to the alternate member and VERIFIED HERE while the Python reference
+  // and the Rust port both refused the same bytes -- the same file, two verdicts,
+  // forger's choice of verifier. No receipt ever produced by anything carried
+  // `signature` inside the signature block, so the fallback is deleted rather than
+  // harmonised: the hex lives in `sig`, it is a string, and anything else is
+  // malformed.
+  const sigHex = str(sig, 'sig');
   const pubHex = str(sig, 'public_key');
   const receiptHash = str(receipt.__obj, 'receipt_sha256');
   if (!sigHex || !pubHex || !receiptHash) {
@@ -133,8 +232,7 @@ function check(receipt) {
     return out;
   }
 
-  const spec = str(sig, 'spec');
-  if (spec === 'obsign/signature/v2') {
+  if (spec === SIG_SPEC_V2) {
     const covered = new Map([
       ['spec', spec], ['alg', sig.get('alg')], ['public_key', pubHex],
       ['receipt_sha256', receiptHash], ['signer', sig.get('signer') ?? null],
@@ -163,9 +261,35 @@ function check(receipt) {
       return out;
     }
 
+    // A NAME THAT IS NOT IN THE FILE IS NOT A BOUND KEY. `bindsHash` hashes only the
+    // keys actually PRESENT, and `binds` is outside the signature, so padding the
+    // list with names for absent keys leaves the hash unchanged: the comparison
+    // below passes and `bound_metadata` then reports keys this signature never
+    // bound and this receipt does not even contain. A producer never emits such a
+    // list; the only readings are "the bound block was deleted" and "the list was
+    // padded", and both are refusals.
+    const missing = binds.filter((k) => !receipt.__obj.has(k));
+    if (missing.length) {
+      out.valid = false;
+      out.detail = `signature \`binds\` names [${[...missing].sort().join(', ')}], which this `
+        + 'receipt does not contain - the bound block was removed since signing, or the '
+        + 'list was padded with keys no signature ever covered. REFUSED';
+      return out;
+    }
+
     const recomputed = bindsHash(receipt, binds);
     const declared = sig.get('binds_sha256') ?? null;
-    if (recomputed !== (typeof declared === 'string' ? declared : null)) {
+    if (declared !== null && typeof declared !== 'string') {
+      // Coercing a non-string to null let an attacker-supplied value be read as
+      // "absent", which an empty `binds` then reproduced -- turning a malformed
+      // field into a passing identity binding. Malformed is refused, never
+      // normalised: whoever handed you the file chose this value.
+      out.valid = false;
+      out.detail = `signature binds_sha256 is ${typeof declared}, not a string or absent `
+        + '- REFUSED (the bound metadata cannot be reproduced)';
+      return out;
+    }
+    if (recomputed !== declared) {
       out.valid = false;
       out.detail = `signature verifies but its bound metadata [${[...binds].sort().join(', ')}] `
         + 'does NOT reproduce binds_sha256 - the bound block has been changed, removed, '
@@ -178,21 +302,27 @@ function check(receipt) {
     out.bound_metadata = [...binds].sort();
     out.unbound_metadata = OUT_OF_CLAIM_FACT.filter(
       (k) => receipt.__obj.has(k) && !binds.includes(k));
-    if (out.unbound_metadata.length) {
-      out.detail += `; WARNING: ${out.unbound_metadata.join(', ')} is present but NOT `
-        + 'covered by this signature - it is an unattested annotation and must not be '
-        + 'printed as if the signature vouched for it';
+    out.unattested_metadata = unattestedKeys(receipt, binds);
+    if (out.unattested_metadata.length) {
+      const n = out.unattested_metadata.length;
+      out.detail += `; WARNING: ${out.unattested_metadata.join(', ')} `
+        + `${n === 1 ? 'is' : 'are'} present but NOT covered by this signature - `
+        + `unattested annotation${n === 1 ? '' : 's'}, which must not be printed as if `
+        + `the signature vouched for ${n === 1 ? 'it' : 'them'}`;
     }
     return out;
   }
 
-  // Legacy v1: signs the bare receipt hash. Verifies, attributes NOBODY.
+  // Legacy v1 -- reached ONLY by `spec: "obsign/signature/v1"` and by an absent spec,
+  // never by an unknown one (that returned above). Signs the bare receipt hash:
+  // verifies, and attributes NOBODY.
   const [ok, detail] = ed25519Ok(pubHex, sigHex, Buffer.from(receiptHash, 'ascii'));
   out.valid = ok;
   out.identity_bound = false;
   out.attributed_signer = null;
   out.bound_metadata = [];
   out.unbound_metadata = OUT_OF_CLAIM_FACT.filter((k) => receipt.__obj.has(k));
+  out.unattested_metadata = unattestedKeys(receipt, []);
   out.detail = ok
     ? `${detail}; legacy obsign/signature/v1 covers NEITHER the signer NOR the case `
       + 'block - the name in this file can be rewritten by anyone with a text editor '
@@ -201,4 +331,7 @@ function check(receipt) {
   return out;
 }
 
-module.exports = { check, bindsHash, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT };
+module.exports = {
+  check, bindsHash, unattestedKeys, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT,
+  SIG_SPEC_V1, SIG_SPEC_V2, SUPPORTED_SIG_SPECS,
+};

@@ -8,6 +8,18 @@ loudly, in CI, in two languages.
 
 ## The frozen surfaces
 
+This section names the surfaces and says what "frozen" means about them. It is **not**
+the specification of any of them — for a while it was the nearest thing the repository
+had, which is how a third implementation came to be written by reading
+`src/obsign_verify/*.py` instead. `docs/SPEC.md` is the specification: the wire format
+and its six limits, the receipt schema and the claim rule, the 31-opcode machine with
+every opcode's arity and semantics, the input-liveness probe, and the signature envelope,
+each stated so a fourth implementation needs no source. Its numbers live in
+`docs/spec/limits.json` and `docs/spec/opcodes.json` and are held to all three
+implementations by `tests/test_spec_constants_match_code.py`. Where the two documents
+overlap, this one governs *whether a surface may change*; that one governs *what the
+surface is*.
+
 **`obsign/receipt/v1` — the claim rule.** The claim is every top-level key except
 `receipt_sha256`, `env`, `signature`, `case`, and `_`-prefixed helpers;
 `receipt_sha256` is SHA-256 over the claim's canonical JSON. This rule never
@@ -52,7 +64,9 @@ implementation's private opinion.
 version of it.** Verification support is never deprecated, never feature-flagged,
 never removed. Verdicts may gain *fields* and *notes*; the meaning of existing
 fields (`integrity`, `reproduced`, `verified`, `input_liveness`, `graph_verified`,
-`complete`, `links_ok`) does not drift. A future version may **refuse more** —
+`complete`, `links_ok`, and — added 2026-08-20 — `unsupported` and `approved_program`)
+does not drift. The full result object is `docs/SPEC.md#the-result-schema`. A future
+version may **refuse more** —
 close a soundness hole, tighten a bound against denial-of-service — because
 refusing a forgery an old version wrongly accepted is a fix, not a break; it may
 never silently **accept more**.
@@ -84,6 +98,43 @@ node verifies standalone* — applied to every receipt actually handed over. A s
 envelope is not itself a fault: two honest attestations of one claim still verify.
 Each node verdict gains an `envelopes` count; a new field is what the guarantee
 permits, and no existing field changes meaning.
+
+**RECEIPT-SPEC — a receipt's `spec` must be `obsign/receipt/v1` (2026-08-20).** The
+first question in verification is *do I know what these bytes are*, and it was never
+asked: the ladder dispatched on `kernel` alone, so a document declaring
+`spec: "obsign/receipt/v99"` — a format whose claim boundary, whose `params` schema and
+whose `output` block nobody here has ever seen — was interpreted under today's v1
+semantics and could be reported `VERIFIED`. A verifier that meets an unrecognised
+receipt spec now reports **unsupported**, which is never spelled *invalid*: it sets a
+new `unsupported` field, does not re-execute the receipt, does not accuse it of anything,
+and still evaluates the signature — because *who signed this file* is answerable without
+knowing what the file means, and can only ever attribute, never verify. This is the same
+rule `obsign/replay/1` already carried for an unknown *program* spec, applied one level
+up. Every receipt that verifies today declares `obsign/receipt/v1` and is unaffected.
+Specified at `docs/SPEC.md#receipt-spec`.
+
+**SIG-SPEC — an unrecognised signature `spec` is unsupported, not v1 (2026-08-20).**
+This document said a verifier meeting an unknown *replay* spec reports *unsupported*,
+and said nothing about an unknown *signature* spec; the dispatch read
+`if spec == v2 … else legacy v1`, so `obsign/signature/v9` was verified under the
+**weakest envelope this format has ever had** — v1 signs the bare `receipt_sha256` and
+covers neither the signer nor the case block. An unknown future version must never
+inherit that. The spec is now exactly three cases: `obsign/signature/v2`;
+absent-or-`obsign/signature/v1`, which is the legacy envelope that attributes nobody; and
+anything else — including a value that is not a string — which sets `unsupported` and
+returns **before reading any of the bytes the unknown spec describes**. An absent spec
+still means v1, so receipts minted before the field existed continue to verify. Specified
+at `docs/SPEC.md#sig-spec`.
+
+**SIG-MEMBER — the signature is spelled `sig`, and it is a string (2026-08-20).** The
+block was read as `sig.get("sig") or sig.get("signature")`, and a synonym fallback in a
+security envelope is a forgery primitive: a non-string `sig` fell through to the
+alternate member, so `{"sig": 5, "signature": "<a valid 128-hex signature>"}` verified in
+the JavaScript port and was a malformed block in Python and Rust — the same file, two
+verdicts, forger's choice of verifier. No receipt produced by anything has ever carried
+`signature` inside the signature block, so the fallback is **deleted rather than
+harmonised**: the hex lives in `sig`, it is a JSON string, and anything else is malformed.
+Specified at `docs/SPEC.md#sig-member`.
 
 ## How the freeze is enforced, not promised
 

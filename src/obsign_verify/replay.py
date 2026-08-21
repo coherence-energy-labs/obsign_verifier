@@ -67,7 +67,21 @@ INT64_MAX = (1 << 63) - 1
 
 
 class Trap(Exception):
-    """A refusal with a reason. Never allowed to escape `run`."""
+    """A refusal with a reason. Never allowed to escape `run`.
+
+    `steps` is how many instructions had retired when the refusal happened -- 0 for a
+    trap raised by `validate`, before execution started. It is verifier-internal in
+    exactly the sense `run_counted`'s count is: a caller that re-runs a program many
+    times has to charge itself for a trapped run too, and charging the step CAP
+    instead over-bills a refusal that happened on instruction three by five orders of
+    magnitude. Over-billing sounds like the safe direction and is not -- it exhausts
+    the input-liveness budget early, and an exhausted budget reports "indeterminate",
+    which does NOT refuse, in place of the "guarded" that does.
+    """
+
+    def __init__(self, *args, steps: int = 0):
+        super().__init__(*args)
+        self.steps = steps
 
 
 def _wrap(v: int) -> int:
@@ -113,7 +127,10 @@ OPS: dict[str, tuple[int, str]] = {
     "EQ":    (3, _ALU2), "NE":  (3, _ALU2),
     "LT":    (3, _ALU2), "LE":  (3, _ALU2),
     "GT":    (3, _ALU2), "GE":  (3, _ALU2),
-    "MULFX": (4, "mulfx"),   # dst, a, b, frac  -- (a*b) >> frac, exact then wrapped
+    # NOT `>>`: the shift FLOORS and this TRUNCATES TOWARD ZERO, which differ for a
+    # negative product (-3 >> 1 is -2; truncation gives -1). docs/RL.md states the
+    # truncating form and both implementations do it; only this comment said shift.
+    "MULFX": (4, "mulfx"),   # dst, a, b, frac -- exact a*b, truncate by 2**frac, wrap
     "SEL":   (4, "sel"),     # dst, cond, a, b
     "NEG":   (2, _ALU1), "ABS": (2, _ALU1), "NOT": (2, _ALU1),
     "LOAD":  (2, _ALU1),     # dst, addr-register
@@ -154,6 +171,17 @@ def validate(prog: Any) -> dict:
         raise Trap("program must be a JSON object")
     if prog.get("spec") != SPEC:
         raise Trap(f"unknown program spec {prog.get('spec')!r}, expected {SPEC!r}")
+
+    # Object-model member names are refused HERE as well as at the parser. The
+    # parser is the right layer and already refuses them, but a program can reach
+    # this function as an already-parsed structure (tools, tests, a caller with its
+    # own loader), and in JavaScript such a member is not data at all -- it
+    # reparents the object. Refusing at both layers is what makes the three
+    # implementations agree no matter which door the program came through.
+    for member in prog:
+        if member in ("__proto__", "constructor", "prototype"):
+            raise Trap(f"program member {member!r} names a JavaScript object-model "
+                       f"slot, not a data field")
 
     for field in ("mem", "steps", "code", "consts", "input", "output"):
         if field not in prog:
@@ -290,95 +318,102 @@ def run_counted(prog: dict, inputs: list[int], step_cap: int | None = None):
 
     pc = 0
     steps = 0
-    while True:
-        if steps >= budget:
-            raise Trap(f"step budget exhausted after {budget} steps")
-        steps += 1
-        if not (0 <= pc < len(code)):
-            raise Trap(f"pc {pc} left the program")
+    # A trap that happens DURING execution carries the count with it: the caller
+    # re-running this program many times has to charge itself for a refused run
+    # too, and the step cap is not what a refusal on instruction three cost.
+    try:
+        while True:
+            if steps >= budget:
+                raise Trap(f"step budget exhausted after {budget} steps")
+            steps += 1
+            if not (0 <= pc < len(code)):
+                raise Trap(f"pc {pc} left the program")
 
-        ins = code[pc]
-        op = ins[0]
-        pc += 1
+            ins = code[pc]
+            op = ins[0]
+            pc += 1
 
-        if op == "HALT":
-            break
-        elif op == "LOADC":
-            mem[ins[1]] = prog["consts"][ins[2]]
-        elif op == "MOV":
-            mem[ins[1]] = mem[ins[2]]
-        elif op == "NEG":
-            mem[ins[1]] = _wrap(-mem[ins[2]])
-        elif op == "ABS":
-            mem[ins[1]] = _wrap(abs(mem[ins[2]]))
-        elif op == "NOT":
-            mem[ins[1]] = _wrap(~mem[ins[2]])
-        elif op == "LOAD":
-            addr = mem[ins[2]]
-            if not (0 <= addr < len(mem)):
-                raise Trap(f"LOAD address {addr} out of bounds")
-            mem[ins[1]] = mem[addr]
-        elif op == "STORE":
-            addr = mem[ins[1]]
-            if not (0 <= addr < len(mem)):
-                raise Trap(f"STORE address {addr} out of bounds")
-            mem[addr] = mem[ins[2]]
-        elif op == "JMP":
-            pc = ins[1]
-        elif op == "JMPZ":
-            if mem[ins[1]] == 0:
-                pc = ins[2]
-        elif op == "JMPNZ":
-            if mem[ins[1]] != 0:
-                pc = ins[2]
-        elif op == "SEL":
-            mem[ins[1]] = mem[ins[3]] if mem[ins[2]] != 0 else mem[ins[4]]
-        elif op == "MULFX":
-            # Exact product first, THEN truncate, THEN wrap. Multiplying in int64 and
-            # shifting afterwards would lose the high bits that the shift is there to
-            # discard -- the classic fixed-point porting bug.
-            mem[ins[1]] = _wrap(_trunc_div(mem[ins[2]] * mem[ins[3]], 1 << ins[4]))
-        else:
-            a, b = mem[ins[2]], mem[ins[3]]
-            if op == "ADD":
-                v = _wrap(a + b)
-            elif op == "SUB":
-                v = _wrap(a - b)
-            elif op == "MUL":
-                v = _wrap(a * b)
-            elif op == "DIV":
-                v = _wrap(_trunc_div(a, b))
-            elif op == "MOD":
-                if b == 0:
-                    raise Trap("modulo by zero")
-                v = _wrap(a - _trunc_div(a, b) * b)
-            elif op == "MIN":
-                v = a if a < b else b
-            elif op == "MAX":
-                v = a if a > b else b
-            elif op == "AND":
-                v = _wrap(a & b)
-            elif op == "OR":
-                v = _wrap(a | b)
-            elif op == "XOR":
-                v = _wrap(a ^ b)
-            elif op in ("SHL", "SHR"):
-                if not (0 <= b <= 63):
-                    raise Trap(f"{op} shift amount {b} must be 0..63")
-                v = _wrap(a << b) if op == "SHL" else _wrap(a >> b)
-            elif op == "EQ":
-                v = int(a == b)
-            elif op == "NE":
-                v = int(a != b)
-            elif op == "LT":
-                v = int(a < b)
-            elif op == "LE":
-                v = int(a <= b)
-            elif op == "GT":
-                v = int(a > b)
-            else:  # GE -- the table above is exhaustive, so no other value reaches here
-                v = int(a >= b)
-            mem[ins[1]] = v
+            if op == "HALT":
+                break
+            elif op == "LOADC":
+                mem[ins[1]] = prog["consts"][ins[2]]
+            elif op == "MOV":
+                mem[ins[1]] = mem[ins[2]]
+            elif op == "NEG":
+                mem[ins[1]] = _wrap(-mem[ins[2]])
+            elif op == "ABS":
+                mem[ins[1]] = _wrap(abs(mem[ins[2]]))
+            elif op == "NOT":
+                mem[ins[1]] = _wrap(~mem[ins[2]])
+            elif op == "LOAD":
+                addr = mem[ins[2]]
+                if not (0 <= addr < len(mem)):
+                    raise Trap(f"LOAD address {addr} out of bounds")
+                mem[ins[1]] = mem[addr]
+            elif op == "STORE":
+                addr = mem[ins[1]]
+                if not (0 <= addr < len(mem)):
+                    raise Trap(f"STORE address {addr} out of bounds")
+                mem[addr] = mem[ins[2]]
+            elif op == "JMP":
+                pc = ins[1]
+            elif op == "JMPZ":
+                if mem[ins[1]] == 0:
+                    pc = ins[2]
+            elif op == "JMPNZ":
+                if mem[ins[1]] != 0:
+                    pc = ins[2]
+            elif op == "SEL":
+                mem[ins[1]] = mem[ins[3]] if mem[ins[2]] != 0 else mem[ins[4]]
+            elif op == "MULFX":
+                # Exact product first, THEN truncate, THEN wrap. Multiplying in int64 and
+                # shifting afterwards would lose the high bits that the shift is there to
+                # discard -- the classic fixed-point porting bug.
+                mem[ins[1]] = _wrap(_trunc_div(mem[ins[2]] * mem[ins[3]], 1 << ins[4]))
+            else:
+                a, b = mem[ins[2]], mem[ins[3]]
+                if op == "ADD":
+                    v = _wrap(a + b)
+                elif op == "SUB":
+                    v = _wrap(a - b)
+                elif op == "MUL":
+                    v = _wrap(a * b)
+                elif op == "DIV":
+                    v = _wrap(_trunc_div(a, b))
+                elif op == "MOD":
+                    if b == 0:
+                        raise Trap("modulo by zero")
+                    v = _wrap(a - _trunc_div(a, b) * b)
+                elif op == "MIN":
+                    v = a if a < b else b
+                elif op == "MAX":
+                    v = a if a > b else b
+                elif op == "AND":
+                    v = _wrap(a & b)
+                elif op == "OR":
+                    v = _wrap(a | b)
+                elif op == "XOR":
+                    v = _wrap(a ^ b)
+                elif op in ("SHL", "SHR"):
+                    if not (0 <= b <= 63):
+                        raise Trap(f"{op} shift amount {b} must be 0..63")
+                    v = _wrap(a << b) if op == "SHL" else _wrap(a >> b)
+                elif op == "EQ":
+                    v = int(a == b)
+                elif op == "NE":
+                    v = int(a != b)
+                elif op == "LT":
+                    v = int(a < b)
+                elif op == "LE":
+                    v = int(a <= b)
+                elif op == "GT":
+                    v = int(a > b)
+                else:  # GE -- the table above is exhaustive, so no other value reaches here
+                    v = int(a >= b)
+                mem[ins[1]] = v
+    except Trap as trap:
+        trap.steps = steps
+        raise
 
     out_off, out_len = prog["output"]["offset"], prog["output"]["length"]
     return mem[out_off:out_off + out_len], steps

@@ -1,0 +1,181 @@
+{
+  "spec": "obsign/replay/1",
+  "renders_into": "docs/SPEC.md",
+  "held_by": "tests/test_spec_constants_match_code.py",
+  "count": 31,
+  "note": "The complete instruction set of obsign/replay/1. `number` is the row's ordinal in the canonical table (`OPS` in src/obsign_verify/replay.py) and is DOCUMENTATION ONLY: an instruction is encoded on the wire as a JSON array whose first element is the opcode NAME, a string, and whose remaining elements are JSON integers. The number never appears in a receipt. `kind` decides how the operands are validated and read, and is the same token the reference implementation uses so the two cannot drift.",
+  "operand_kinds": {
+    "reg": "a memory cell index; validated to 0 <= r < mem",
+    "const": "an index into `consts`; validated to 0 <= k < len(consts)",
+    "target": "an instruction index; validated to 0 <= t < len(code)",
+    "frac": "a fixed-point shift; validated to 0 <= f <= 63"
+  },
+  "validation_by_kind": {
+    "loadc": "operand 0 is a reg, operand 1 is a const",
+    "alu1": "every operand is a reg",
+    "alu2": "every operand is a reg",
+    "sel": "every operand is a reg",
+    "store": "every operand is a reg",
+    "mulfx": "operands 0..2 are regs, operand 3 is a frac",
+    "jump": "the LAST operand is a target; every earlier operand is a reg",
+    "jcc": "the LAST operand is a target; every earlier operand is a reg",
+    "halt": "no operands"
+  },
+  "opcodes": [
+    {
+      "number": 0, "name": "LOADC", "arity": 2, "kind": "loadc",
+      "operands": ["dst:reg", "k:const"],
+      "semantics": "mem[dst] = consts[k]. The constant pool is validated as int64 at load time, so no wrap is needed here."
+    },
+    {
+      "number": 1, "name": "MOV", "arity": 2, "kind": "alu1",
+      "operands": ["dst:reg", "a:reg"],
+      "semantics": "mem[dst] = mem[a]."
+    },
+    {
+      "number": 2, "name": "ADD", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] + mem[b]). Wrapping int64: INT64_MAX + 1 is INT64_MIN."
+    },
+    {
+      "number": 3, "name": "SUB", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] - mem[b])."
+    },
+    {
+      "number": 4, "name": "MUL", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] * mem[b]). The product is formed EXACTLY (128 bits are enough for any int64 pair) and only then reduced modulo 2**64 into int64; a port that multiplies in native i64 and relies on hardware wrap lands on the same value, but one that multiplies in a double does not."
+    },
+    {
+      "number": 5, "name": "DIV", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "TRAP `division by zero` if mem[b] == 0. Otherwise mem[dst] = wrap(trunc(mem[a] / mem[b])), truncating TOWARD ZERO: -7 / 2 is -3, not -4. INT64_MIN / -1 leaves the range and WRAPS to INT64_MIN; it does not trap."
+    },
+    {
+      "number": 6, "name": "MOD", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "TRAP `modulo by zero` if mem[b] == 0. Otherwise mem[dst] = wrap(a - trunc(a / b) * b), so the remainder takes the sign of the DIVIDEND: -7 % 2 is -1."
+    },
+    {
+      "number": 7, "name": "MIN", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = mem[a] if mem[a] < mem[b] else mem[b]. Signed comparison; no wrap is possible."
+    },
+    {
+      "number": 8, "name": "MAX", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = mem[a] if mem[a] > mem[b] else mem[b]."
+    },
+    {
+      "number": 9, "name": "AND", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] & mem[b]), bitwise on the two's-complement representation."
+    },
+    {
+      "number": 10, "name": "OR", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] | mem[b])."
+    },
+    {
+      "number": 11, "name": "XOR", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = wrap(mem[a] ^ mem[b])."
+    },
+    {
+      "number": 12, "name": "SHL", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "TRAP `SHL shift amount B must be 0..63` unless 0 <= mem[b] <= 63. Otherwise mem[dst] = wrap(mem[a] << mem[b]): the shift is performed on the exact integer and the result reduced into int64, so bits shifted past bit 63 are discarded."
+    },
+    {
+      "number": 13, "name": "SHR", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "TRAP `SHR shift amount B must be 0..63` unless 0 <= mem[b] <= 63. Otherwise mem[dst] = wrap(mem[a] >> mem[b]), an ARITHMETIC right shift: the sign bit is propagated and the result FLOORS, so -3 >> 1 is -2. This is the one place the machine floors instead of truncating toward zero, and it is why DIV exists separately."
+    },
+    {
+      "number": 14, "name": "EQ", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] == mem[b] else 0."
+    },
+    {
+      "number": 15, "name": "NE", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] != mem[b] else 0."
+    },
+    {
+      "number": 16, "name": "LT", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] < mem[b] else 0. Signed."
+    },
+    {
+      "number": 17, "name": "LE", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] <= mem[b] else 0. Signed."
+    },
+    {
+      "number": 18, "name": "GT", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] > mem[b] else 0. Signed."
+    },
+    {
+      "number": 19, "name": "GE", "arity": 3, "kind": "alu2",
+      "operands": ["dst:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = 1 if mem[a] >= mem[b] else 0. Signed."
+    },
+    {
+      "number": 20, "name": "MULFX", "arity": 4, "kind": "mulfx",
+      "operands": ["dst:reg", "a:reg", "b:reg", "frac:frac"],
+      "semantics": "mem[dst] = wrap(trunc((mem[a] * mem[b]) / 2**frac)). THE ORDER IS THE SPECIFICATION: form the product EXACTLY at full width first, THEN truncate toward zero by 2**frac, THEN reduce into int64. Multiplying in int64 and shifting afterwards loses exactly the high bits the shift exists to discard -- the classic fixed-point porting bug -- and truncating with an arithmetic right shift floors instead, which differs for a negative product (-3 >> 1 is -2; truncation gives -1). `frac` is validated to 0..63, so the divisor is never zero and MULFX cannot trap."
+    },
+    {
+      "number": 21, "name": "SEL", "arity": 4, "kind": "sel",
+      "operands": ["dst:reg", "cond:reg", "a:reg", "b:reg"],
+      "semantics": "mem[dst] = mem[a] if mem[cond] != 0 else mem[b]. Both arms are READ; this is a select, not a branch, and it costs one step either way."
+    },
+    {
+      "number": 22, "name": "NEG", "arity": 2, "kind": "alu1",
+      "operands": ["dst:reg", "a:reg"],
+      "semantics": "mem[dst] = wrap(-mem[a]). NEG of INT64_MIN wraps back to INT64_MIN."
+    },
+    {
+      "number": 23, "name": "ABS", "arity": 2, "kind": "alu1",
+      "operands": ["dst:reg", "a:reg"],
+      "semantics": "mem[dst] = wrap(abs(mem[a])). ABS of INT64_MIN is 2**63, which is outside int64 and wraps back to INT64_MIN. Stated because a port using a native abs on i64 may instead panic or invoke undefined behaviour there."
+    },
+    {
+      "number": 24, "name": "NOT", "arity": 2, "kind": "alu1",
+      "operands": ["dst:reg", "a:reg"],
+      "semantics": "mem[dst] = wrap(~mem[a]), the bitwise complement: ~x == -x - 1."
+    },
+    {
+      "number": 25, "name": "LOAD", "arity": 2, "kind": "alu1",
+      "operands": ["dst:reg", "addr:reg"],
+      "semantics": "addr = mem[addr_reg]. TRAP `LOAD address ADDR out of bounds` unless 0 <= addr < mem. Otherwise mem[dst] = mem[addr]. The address is a RUNTIME value, so this is the one addressing mode the validator cannot bound statically."
+    },
+    {
+      "number": 26, "name": "STORE", "arity": 2, "kind": "store",
+      "operands": ["addr:reg", "src:reg"],
+      "semantics": "addr = mem[addr_reg]. TRAP `STORE address ADDR out of bounds` unless 0 <= addr < mem. Otherwise mem[addr] = mem[src]. Note the operand ORDER: the address register comes first, the source second."
+    },
+    {
+      "number": 27, "name": "JMP", "arity": 1, "kind": "jump",
+      "operands": ["target:target"],
+      "semantics": "pc = target. The target is validated to be a real instruction index at load time, so a jump cannot leave the program."
+    },
+    {
+      "number": 28, "name": "JMPZ", "arity": 2, "kind": "jcc",
+      "operands": ["cond:reg", "target:target"],
+      "semantics": "if mem[cond] == 0 then pc = target; otherwise execution continues at the next instruction."
+    },
+    {
+      "number": 29, "name": "JMPNZ", "arity": 2, "kind": "jcc",
+      "operands": ["cond:reg", "target:target"],
+      "semantics": "if mem[cond] != 0 then pc = target; otherwise execution continues at the next instruction."
+    },
+    {
+      "number": 30, "name": "HALT", "arity": 0, "kind": "halt",
+      "operands": [],
+      "semantics": "Stop. The output window is read from memory and returned. HALT COSTS ONE STEP: the budget is checked, the step counter is incremented and the pc is advanced before the opcode is dispatched, so a program of exactly one HALT retires 1 step and a program declaring `steps: 1` that is one HALT completes."
+    }
+  ]
+}

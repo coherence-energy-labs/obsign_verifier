@@ -49,6 +49,11 @@ from typing import NoReturn
 from . import nodes
 from .nodes import Pos
 
+#: CPython's own decimal-conversion limit, so a literal this lexer accepts is a
+#: literal every implementation can convert.
+MAX_INT_DIGITS = 4300
+INT64_MIN, INT64_MAX = -(1 << 63), (1 << 63) - 1
+
 KEYWORDS = {"input", "output", "let", "if", "else", "while", "arr",
             "fn", "return", "for", "in", "break", "continue", "const"}
 BUILTINS = {"min", "max", "abs", "sel", "mulfx", "len"}
@@ -108,16 +113,41 @@ def lex(src: str) -> list[_Tok]:
             adv(len("#steps"))
             toks.append(_Tok("pragma", "#steps", pos))
             continue
+        # `c.isdigit()` is true for Unicode digits the ASCII pattern below cannot
+        # match -- Arabic-Indic, superscripts, circled numerals -- so the gate and
+        # the pattern disagreed and `m` came back None. `m.group(0)` then raised
+        # AttributeError straight past the caller, and a compiler that crashes on
+        # hostile source has failed to REFUSE it: an auditor gets a traceback where
+        # a diagnostic belongs.
         if c.isdigit():
             m = re.match(r"0[xX][0-9a-fA-F][0-9a-fA-F_]*|[0-9][0-9_]*", src[i:])
+            if m is None:
+                raise ParseError(f"unexpected character {c!r}: numbers must be ASCII", pos)
             text = m.group(0)
             base = 16 if text[:2].lower() == "0x" else 10
-            value = int(text.replace("_", ""), base)
+            digits = text.replace("_", "")
+            # CPython refuses to convert a decimal literal longer than 4300 digits
+            # and the ValueError escapes with no position. Refuse it ourselves,
+            # with one. Hex has no such conversion limit on the way IN, which is how
+            # an unbounded integer reached three `raise` statements that interpolate
+            # it into their own diagnostic and fall over there instead.
+            if len(digits) > MAX_INT_DIGITS:
+                raise ParseError(
+                    f"integer literal has {len(digits)} digits, limit is {MAX_INT_DIGITS}", pos)
+            # The int64 RANGE check stays in the typer, where it already lived and
+            # where its diagnostic is written. Only the conversion limit belongs
+            # here, because that one crashes before any later stage can speak.
+            value = int(digits, base)
             toks.append(_Tok("int", text, pos, value))
             adv(len(text))
             continue
+        # Same disagreement in the other direction: `isalpha()` admits every
+        # Unicode letter while the pattern accepts ASCII only.
         if c.isalpha() or c == "_":
             m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", src[i:])
+            if m is None:
+                raise ParseError(
+                    f"unexpected character {c!r}: identifiers must be ASCII", pos)
             text = m.group(0)
             kind = "kw" if text in KEYWORDS else "builtin" if text in BUILTINS else "ident"
             toks.append(_Tok(kind, text, pos))
@@ -282,7 +312,23 @@ class Parser:
         self._eat("sym", ";")
 
     # ---- statements ----
+    #: Statement nesting bound. `if a { if a { ... } }` recurses through
+    #: _parse_block/_parse_stmt, which the expression guard never sees, and every
+    #: later stage walks that tree recursively too. One bound, stated once, for
+    #: every recursive descent the language has.
+    MAX_BLOCK_DEPTH = 48
+
     def _parse_block(self) -> tuple[nodes.Stmt, ...]:
+        self._bdepth = getattr(self, "_bdepth", 0) + 1
+        try:
+            if self._bdepth > self.MAX_BLOCK_DEPTH:
+                raise ParseError(
+                    f"blocks nested deeper than {self.MAX_BLOCK_DEPTH - 1}", self._peek().pos)
+            return self._parse_block_inner()
+        finally:
+            self._bdepth -= 1
+
+    def _parse_block_inner(self) -> tuple[nodes.Stmt, ...]:
         self._eat("sym", "{")
         stmts: list[nodes.Stmt] = []
         while not self._at("sym", "}"):
@@ -355,8 +401,48 @@ class Parser:
         self._err(f"expected a statement, got {t.text or t.kind!r}")
 
     # ---- expressions (precedence climbing) ----
+    #: How deeply expressions may nest. The parser descends 8 precedence tiers per
+    #: parenthesis, so CPython's ~1000-frame limit was reached at 82 nested parens
+    #: -- and a RecursionError is not a refusal: it escapes past every handler
+    #: `replayc/__main__.py` catches and lands in an auditor's terminal as a
+    #: traceback. The grammar never stated a nesting bound, so there was nothing to
+    #: refuse against; now it states one, and refuses with a position.
+    MAX_EXPR_DEPTH = 48
+
     def _parse_expr(self) -> nodes.Expr:
-        return self._bin(0)
+        self._depth = getattr(self, "_depth", 0) + 1
+        if self._depth > self.MAX_EXPR_DEPTH:
+            self._depth -= 1
+            raise ParseError(
+                f"expression nested deeper than {self.MAX_EXPR_DEPTH - 1}", self._peek().pos)
+        try:
+            e = self._bin(0)
+        finally:
+            self._depth -= 1
+        # The parse-time guard counts RECURSION, and `a+a+a+...` does not recurse --
+        # precedence climbing loops for left-associativity, then hands back a tree
+        # 512 deep that the typer, folder and codegen all walk recursively. So the
+        # tree itself is bounded, measured iteratively so the check cannot be the
+        # thing that overflows.
+        if self._depth == 0:
+            stack, deepest = [(e, 1)], 0
+            while stack:
+                node, d = stack.pop()
+                if d > deepest:
+                    deepest = d
+                    if deepest > self.MAX_EXPR_DEPTH:
+                        raise ParseError(
+                            f"expression tree deeper than {self.MAX_EXPR_DEPTH - 1}",
+                            getattr(node, "pos", None) or self._peek().pos)
+                for f in ("left", "right", "operand", "cond", "index", "base"):
+                    child = getattr(node, f, None)
+                    if child is not None and hasattr(child, "pos"):
+                        stack.append((child, d + 1))
+                for f in ("args", "items"):
+                    for child in getattr(node, f, ()) or ():
+                        if hasattr(child, "pos"):
+                            stack.append((child, d + 1))
+        return e
 
     #: precedence tiers, lowest first; each is a set of symbol texts
     _TIERS = [{"|"}, {"^"}, {"&"}, {"==", "!="}, {"<", "<=", ">", ">="},
@@ -375,8 +461,20 @@ class Parser:
     def _unary(self) -> nodes.Expr:
         t = self._peek()
         if t.kind == "sym" and t.text in ("-", "~"):
-            self._next()
-            operand = self._unary()
+            # A unary chain recurses WITHOUT passing through _parse_expr, so the
+            # depth guard there never saw it: `output ----...----a;` walked straight
+            # to a RecursionError. Every recursive descent needs the bound, not just
+            # the one that happened to be measured first.
+            self._depth = getattr(self, "_depth", 0) + 1
+            if self._depth > self.MAX_EXPR_DEPTH:
+                self._depth -= 1
+                raise ParseError(
+                    f"expression nested deeper than {self.MAX_EXPR_DEPTH - 1}", t.pos)
+            try:
+                self._next()
+                operand = self._unary()
+            finally:
+                self._depth -= 1
             return nodes.Unary("neg" if t.text == "-" else "not", operand, t.pos)
         return self._primary()
 
