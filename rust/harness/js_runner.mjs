@@ -9,9 +9,16 @@
 // which is the precise failure the format exists to make impossible.
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const ROOT = new URL('../../js/src/', import.meta.url).pathname;
+// `fileURLToPath`, NOT `.pathname`. On Windows a file: URL's pathname is `/C:/...`,
+// with a leading slash and percent-escapes intact, so every `require` below failed
+// with `Cannot find module '/C:/.../canonical.js'` -- the JavaScript leg of the
+// three-way differential could not start at all on the platform the CI matrix
+// declares, and the whole suite reported that as seven failing tests rather than as
+// "the harness never ran". `fileURLToPath` is the only correct URL-to-path conversion.
+const ROOT = fileURLToPath(new URL('../../js/src/', import.meta.url));
 const { loadReceipt, canonicalString } = require(`${ROOT}canonical.js`);
 const { verify, plain } = require(`${ROOT}verify.js`);
 const { verifyGraph } = require(`${ROOT}graph.js`);
@@ -50,10 +57,14 @@ for (const [name, payload] of cases) {
         integrity: v.integrity,
         reproduced: v.reproduced === undefined ? null : v.reproduced,
         verified: v.verified,
+        unsupported: v.unsupported ?? false,
+        approved_program: v.approved_program ?? null,
         input_liveness: v.input_liveness ?? null,
         input_liveness_by_input: v.input_liveness_by_input ?? [],
+        output_liveness_by_cell: v.output_liveness_by_cell ?? [],
         signature: s === null || s === undefined ? null : {
-          present: s.present, valid: s.valid, identity_bound: s.identity_bound,
+          present: s.present, valid: s.valid, unsupported: s.unsupported ?? false,
+          identity_bound: s.identity_bound,
           attributed_signer: s.attributed_signer ?? null,
           claimed_signer: s.claimed_signer ?? null,
           bound_metadata: s.bound_metadata ?? [],

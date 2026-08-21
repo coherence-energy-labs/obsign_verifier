@@ -6,6 +6,25 @@
 Imports NOTHING from the engine that produced the receipt. That independence is
 the point -- if this package imported the producer, "it verifies" would mean "the
 producer agrees with itself".
+
+WHAT `verify` RETURNS, and the two fields a library caller most often wants:
+
+    verify(receipt, expect_program=None, strict_liveness=False) -> dict
+
+    verified           steps 1-3 of the ladder held
+    unsupported        this verifier does not implement the receipt's `spec`. NEVER
+                       the same as "forged": nothing was re-executed and nothing here
+                       is a verdict about those bytes.
+    approved_program   None when no `expect_program` was supplied; True/False when one
+                       was. The pin used to be CLI post-processing in three separate
+                       implementations, so every caller who imported the package
+                       instead of shelling out silently got the weaker question.
+    integrity, reproduced, signature, input_liveness, input_liveness_by_input,
+    output_liveness_by_cell, notes
+
+`strict_liveness=True` refuses a receipt whose input-liveness probe ended
+`indeterminate`. The default accepts it, deliberately: a verifier must not accuse an
+honest receipt of forgery for being expensive to probe.
 """
 
 from .canonical import canonical_sha256, claim_of, load_receipt

@@ -108,7 +108,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check build twine
+      # PINNED TO EXACT VERSIONS. `build` and `twine` are the tools that PRODUCE and
+      # inspect the artifact this workflow then publishes under our name, so an
+      # unpinned install makes the bytes a stranger downloads depend on whatever the
+      # index served at that moment. It also makes a release irreproducible for no
+      # benefit: nothing here wants the newest builder, it wants a builder we chose.
+      # Versions read from PyPI on 2026-08-20.
+      - run: python -m pip install --disable-pip-version-check build==1.5.0 twine==7.0.0
       - run: python -m build
       - run: python -m twine check dist/*
 
@@ -191,7 +197,24 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      # PINNED TO A COMMIT, LIKE EVERY OTHER ACTION IN THIS FILE.
+      #
+      # This was `@release/v1` -- a MUTABLE BRANCH REF -- and it is the one action that
+      # runs inside the only job holding `id-token: write`. Whoever can move that branch
+      # (a compromised maintainer account, a stolen token, a malicious PR merged
+      # upstream) gets code execution in a context that can mint a PyPI credential
+      # scoped to this repository, on the next tag we push, with nothing in this
+      # repository changing. Every other `uses:` here was already a 40-hex SHA; this one
+      # was not, and it was the one that mattered most.
+      #
+      # A SHA is not the same promise as a version tag: it does not float forward with
+      # upstream fixes, so bumping it is a deliberate act. That is the trade, taken on
+      # purpose. The doc-gates job asserts the shape rather than trusting this comment.
+      #
+      # dc37677b2e1c63e2034f94d8a5b11f265b73ba33 was the head of release/v1 on
+      # 2026-08-20, read from the GitHub API rather than from a README.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 @ 2026-08-20
 
   # The evidence for the JavaScript port, held apart from the act of publishing it.
   #
@@ -261,11 +284,30 @@ jobs:
 
       # Trusted publishing needs a recent npm; the runner's bundled version may predate
       # it, and a silent fallback to token auth is exactly what this job exists to avoid.
+      #
+      # PINNED, NOT `@latest`. This ran `npm install -g npm@latest` in the step
+      # immediately before `npm publish --provenance`, inside the job holding
+      # `id-token: write` -- so the code that mints and uses an npm credential was
+      # whatever the registry served at that second, resolved at run time, unreviewed
+      # and different on every release. "Recent enough for trusted publishing" is a
+      # floor, and a floor is satisfied by a version we chose; it does not require the
+      # newest one that exists. 12.0.2 was `npm view npm version` on 2026-08-20.
+      #
+      # `--version` is asserted rather than printed: an install that silently no-ops
+      # leaves the runner's bundled npm in place, and a printed line nobody reads is
+      # exactly the shape of check this estate keeps finding dark.
       - name: npm must be new enough for trusted publishing
+        env:
+          NPM_PINNED: "12.0.2"
         run: |
           set -eu
-          npm install -g npm@latest
-          npm --version
+          npm install -g "npm@${NPM_PINNED}"
+          got="$(npm --version)"
+          if [ "$got" != "$NPM_PINNED" ]; then
+            echo "FAIL: npm is $got, expected the pinned $NPM_PINNED -- the install did not take"
+            exit 1
+          fi
+          echo "npm $got (pinned)"
 
       - name: publish
         working-directory: js

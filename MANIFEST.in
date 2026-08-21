@@ -1,7 +1,58 @@
 # The sdist must be self-contained: someone auditing the source should get the
 # tests and the artifacts those tests judge against, not just the modules.
-include LICENSE README.md
+#
+# THAT SENTENCE WAS ASPIRATIONAL UNTIL 2026-08-20. The sdist shipped `tests/*.py` and
+# neither of the two other implementations those tests exist to compare against, so
+# `pytest` inside an unpacked sdist did not run and fail -- it did not COLLECT:
+#
+#     ERROR collecting tests/test_cross_language_differential.py
+#     ModuleNotFoundError: No module named 'corpus'      # rust/harness/corpus.py
+#
+# An auditor who follows the README's own instruction gets a stack trace instead of a
+# suite. The fix is to ship the artifacts, not to soften the tests: a differential that
+# skips its second and third columns reports the same thing whether or not the ports
+# agree, and this estate's whole argument is that a skip is not a pass.
+include LICENSE README.md rust-toolchain.toml
 recursive-include src/obsign_verify/data *
 recursive-include tests *.py
 recursive-include docs *.md
+# ...and the machine-readable half of the specification. `docs/spec/limits.json` and
+# `docs/spec/opcodes.json` are not documentation ABOUT the format, they are the format's
+# numbers, and `tests/test_spec_constants_match_code.py` -- shipped by the line below --
+# reads both. Without this line the sdist carries a test that fails on a missing file,
+# which is the same self-containment defect the wheel gate exists to catch, one artifact
+# over.
+recursive-include docs *.json
 recursive-include tools *.py
+
+# The second and third implementations, and the harness that drives them. These are
+# what `tests/test_cross_language_differential.py`, `tests/test_receipt_byte_differential.py`
+# and `tests/test_spec_constants_match_code.py` READ -- the first two by executing them,
+# the last by comparing their declared constants against `docs/spec/limits.json`. They
+# are source, not build output; `js/node_modules` and `rust/target` are not listed and
+# never should be.
+include js/README.md js/package.json js/LICENSE
+recursive-include js/src *.js
+recursive-include js/bin *.js
+recursive-include js/test *.js
+recursive-include js/test/fixtures *.json
+include rust/README.md rust/Cargo.toml rust/Cargo.lock
+recursive-include rust/src *.rs
+recursive-include rust/tests *.rs
+recursive-include rust/harness *.py *.mjs
+recursive-include tests *.mjs
+recursive-include tests/corpus *
+
+# The worked examples. `tests/test_replayc_examples.py` regenerates the shipped
+# conformance receipt FROM `examples/rl/cecl.rl` and compares output hashes -- the one
+# anchor in the suite that no self-consistency can fake -- and `examples/ecl_receipt.json`
+# is what `tests/test_replay.py` pins the program digest and the liveness verdict
+# against. Without them sixteen tests failed on FileNotFoundError inside an sdist.
+recursive-include examples *.py *.json
+recursive-include examples/rl *.rl
+
+# The published dogfood stream: 24 KB of receipts the product's own page invites people
+# to re-derive. `tests/test_verifier.py` verifies all four and asserts `env` rides
+# outside the claim hash; without them it printed `SKIPPED [3] stream not built`, and a
+# named skip is still a rung nobody exercised where a stranger reads the source.
+recursive-include stream *.json

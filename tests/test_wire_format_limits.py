@@ -95,6 +95,7 @@ def test_the_two_parsers_agree_on_every_case():
     try:
         tmp.write_text(json.dumps([[c[0], c[1]] for c in _CASES]), encoding="utf-8")
         proc = subprocess.run(["node", str(runner), str(tmp)],
+                              encoding="utf-8",
                               capture_output=True, text=True, timeout=120, check=False)
     finally:
         tmp.unlink(missing_ok=True)

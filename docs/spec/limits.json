@@ -1,0 +1,329 @@
+{
+  "spec": "obsign/spec-constants/1",
+  "renders_into": "docs/SPEC.md",
+  "held_by": "tests/test_spec_constants_match_code.py",
+  "note": "Every numeric constant docs/SPEC.md states, with the implementations that must agree with it. `sources` names a file per language: the Python entry is read by IMPORT (the value the interpreter uses decides verdicts), the JavaScript and Rust entries by a regex over the declaration. `symbols` overrides the name when a language spells it differently; `aliases` records a source-level spelling that denotes the value without being a numeric literal; `patterns` pins a value that is written as a bare literal inside an expression rather than given a name. A constant recorded here with nothing to check it against is prose with a colon in it, and the test refuses it.",
+  "constants": {
+    "MAX_RECEIPT_BYTES": {
+      "value": 4194304,
+      "expression": "4 * 1024 * 1024",
+      "unit": "bytes of UTF-8",
+      "contract": "WIRE",
+      "meaning": "Largest receipt text that may be parsed. Checked BEFORE parsing, because every later check walks the document.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+    "MAX_DEPTH": {
+      "value": 32,
+      "expression": "32",
+      "unit": "containers entered",
+      "contract": "WIRE",
+      "meaning": "Deepest nesting that loads, counted as CONTAINERS ENTERED (the top-level object is 1). 32 containers load; 33 are refused, whatever sits at the bottom.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+    "MAX_MEMBERS_PER_OBJECT": {
+      "value": 1024,
+      "expression": "1024",
+      "unit": "members",
+      "contract": "WIRE",
+      "meaning": "Most members one JSON object may carry.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+    "MAX_ARRAY_LENGTH": {
+      "value": 1048576,
+      "expression": "1 << 20",
+      "unit": "elements",
+      "contract": "WIRE",
+      "meaning": "Most elements one JSON array may carry.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+    "MAX_STRING_BYTES": {
+      "value": 65536,
+      "expression": "65536",
+      "unit": "bytes of UTF-8",
+      "contract": "WIRE",
+      "meaning": "Longest string value OR object key, measured as UTF-8 bytes, not code points.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+    "MAX_INT_DIGITS": {
+      "value": 4300,
+      "expression": "4300",
+      "unit": "decimal digits, sign excluded",
+      "contract": "WIRE",
+      "meaning": "Longest integer literal that loads. Exactly CPython's default int-string conversion limit, so the reference and the ports refuse the same literals.",
+      "sources": {
+        "python": "src/obsign_verify/canonical.py",
+        "javascript": "js/src/canonical.js",
+        "rust": "rust/src/json.rs"
+      }
+    },
+
+    "MAX_MEM": {
+      "value": 1048576,
+      "expression": "1 << 20",
+      "unit": "int64 cells",
+      "contract": "EXECUTION",
+      "meaning": "Largest `mem` a program may declare. Also caps the length of `consts`.",
+      "sources": {
+        "python": "src/obsign_verify/replay.py",
+        "javascript": "js/src/replay.js",
+        "rust": "rust/src/replay.rs"
+      }
+    },
+    "MAX_STEPS": {
+      "value": 50000000,
+      "expression": "50_000_000",
+      "unit": "instructions",
+      "contract": "EXECUTION",
+      "meaning": "Hard ceiling on the declared step budget. A program may declare less, never more.",
+      "sources": {
+        "python": "src/obsign_verify/replay.py",
+        "javascript": "js/src/replay.js",
+        "rust": "rust/src/replay.rs"
+      }
+    },
+    "MAX_CODE": {
+      "value": 65536,
+      "expression": "1 << 16",
+      "unit": "instructions",
+      "contract": "EXECUTION",
+      "meaning": "Most instructions a program's `code` may hold. `code` must also be non-empty.",
+      "sources": {
+        "python": "src/obsign_verify/replay.py",
+        "javascript": "js/src/replay.js",
+        "rust": "rust/src/replay.rs"
+      }
+    },
+    "INT64_MIN": {
+      "value": -9223372036854775808,
+      "expression": "-(1 << 63)",
+      "unit": "int64",
+      "contract": "EXECUTION",
+      "meaning": "Lower edge of the machine's only type. Every constant, operand value and input must lie in [INT64_MIN, INT64_MAX].",
+      "sources": {
+        "python": "src/obsign_verify/replay.py",
+        "javascript": "js/src/replay.js",
+        "rust": "rust/src/replay.rs"
+      },
+      "aliases": { "rust": "i64::MIN" }
+    },
+    "INT64_MAX": {
+      "value": 9223372036854775807,
+      "expression": "(1 << 63) - 1",
+      "unit": "int64",
+      "contract": "EXECUTION",
+      "meaning": "Upper edge of the machine's only type.",
+      "sources": {
+        "python": "src/obsign_verify/replay.py",
+        "javascript": "js/src/replay.js",
+        "rust": "rust/src/replay.rs"
+      },
+      "aliases": { "rust": "i64::MAX" }
+    },
+
+    "LIVENESS_COST_CELL": {
+      "value": 1,
+      "expression": "1",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "Probe cost of zeroing one memory cell -- the cheapest thing a run does, and therefore the denominator of the whole cost model.",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_COST_CELL", "javascript": "COST_CELL", "rust": "COST_CELL" }
+    },
+    "LIVENESS_COST_INPUT": {
+      "value": 16,
+      "expression": "16",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "Probe cost of copying, type-checking and range-checking one declared input.",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_COST_INPUT", "javascript": "COST_INPUT", "rust": "COST_INPUT" }
+    },
+    "LIVENESS_COST_CONST": {
+      "value": 8,
+      "expression": "8",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "Probe cost of re-validating one entry of the constant pool.",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_COST_CONST", "javascript": "COST_CONST", "rust": "COST_CONST" }
+    },
+    "LIVENESS_COST_CODE": {
+      "value": 128,
+      "expression": "128",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "Probe cost of re-validating one instruction.",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_COST_CODE", "javascript": "COST_CODE", "rust": "COST_CODE" }
+    },
+    "LIVENESS_COST_STEP": {
+      "value": 64,
+      "expression": "64",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "Probe cost of executing one instruction.",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_COST_STEP", "javascript": "COST_STEP", "rust": "COST_STEP" }
+    },
+    "LIVENESS_FLOOR": {
+      "value": 32000000,
+      "expression": "32_000_000",
+      "unit": "cell-equivalents",
+      "contract": "EXECUTION",
+      "meaning": "The probe budget a program gets however cheap it is, so a small constant program with many declared inputs is swept exhaustively rather than reported `indeterminate` (which does not refuse).",
+      "sources": {
+        "python": "src/obsign_verify/verify.py",
+        "javascript": "js/src/verify.js",
+        "rust": "rust/src/verify.rs"
+      },
+      "symbols": { "python": "_LIVENESS_FLOOR", "javascript": "LIVENESS_FLOOR" }
+    },
+    "LIVENESS_BUDGET_MULTIPLIER": {
+      "value": 8,
+      "expression": "8",
+      "unit": "multiples of the base run's cost",
+      "contract": "EXECUTION",
+      "meaning": "Total probe budget is max(base_cost * 8, LIVENESS_FLOOR). Written as a bare literal rather than a named constant, so it is pinned by pattern.",
+      "patterns": {
+        "python": {
+          "file": "src/obsign_verify/verify.py",
+          "regex": "base_cost\\s*\\*\\s*(\\d+)"
+        },
+        "javascript": {
+          "file": "js/src/verify.js",
+          "regex": "baseCost\\s*\\*\\s*(\\d+)"
+        },
+        "rust": {
+          "file": "rust/src/verify.rs",
+          "regex": "base_cost\\.saturating_mul\\((\\d+)\\)"
+        }
+      }
+    },
+    "LIVENESS_PER_RUN_FLOOR_STEPS": {
+      "value": 100000,
+      "expression": "100_000",
+      "unit": "instructions",
+      "contract": "EXECUTION",
+      "meaning": "A single perturbation run is capped at min(MAX_STEPS, max(base_steps, 100_000)) instructions, so a program that spins near its declared budget cannot make each probe expensive. Written as a bare literal, so it is pinned by pattern.",
+      "patterns": {
+        "python": {
+          "file": "src/obsign_verify/verify.py",
+          "regex": "max\\(base_steps,\\s*([0-9_]+)\\)"
+        },
+        "javascript": {
+          "file": "js/src/verify.js",
+          "regex": "Math\\.max\\(baseSteps,\\s*([0-9_]+)\\)"
+        },
+        "rust": {
+          "file": "rust/src/verify.rs",
+          "regex": "base_steps\\.max\\(([0-9_]+)\\)"
+        }
+      }
+    },
+
+    "MIN_GRID": {
+      "value": 2,
+      "expression": "2",
+      "unit": "cells per side",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility. At grid 1 the coordinate grid is 0/(n-1) = 0/0 = NaN, and the int64 cast of NaN is platform-dependent.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_GRID": {
+      "value": 4096,
+      "expression": "4096",
+      "unit": "cells per side",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility. One field copy at this size is 134 MiB.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_TAU_STEPS": {
+      "value": 1000000,
+      "expression": "1_000_000",
+      "unit": "evolution steps",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility: an unbounded step count is a time denial of service.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_SOURCES": {
+      "value": 65536,
+      "expression": "1 << 16",
+      "unit": "source tuples",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility: most `(cx, cy, strength, width)` tuples a receipt may declare.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_CELL_STEPS": {
+      "value": 1073741824,
+      "expression": "1 << 30",
+      "unit": "cell updates",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility: grid * grid * max(steps, 1) must not exceed this. Bounding each dimension is not enough; the product is what costs time.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_FRAC_BITS": {
+      "value": 57,
+      "expression": "57",
+      "unit": "fractional bits",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility, DERIVED rather than chosen: the clamp is hi = round(10.0 * 2**frac_bits) and the laplacian materialises 4*hi as an int64 temporary, which leaves int64 at frac_bits 58.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MAX_SOURCE_COORD": {
+      "value": 1e150,
+      "expression": "1e150",
+      "unit": "grid coordinates",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility: keeps (coord - x)**2 finite in f64, because an infinite squared distance is one subtraction from inf-inf = NaN and a platform-dependent cast.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    },
+    "MIN_SOURCE_WIDTH": {
+      "value": 2.2250738585072014e-308,
+      "expression": "sys.float_info.min",
+      "unit": "grid coordinates",
+      "contract": "EXECUTION",
+      "meaning": "tau_field_fixed admissibility: a width of 0 makes the exponent 0/0 = NaN at a coincident grid node, a negative width overflows exp to +inf, and a subnormal one is flushed to zero on machines running FTZ. All three end in an int64 cast that differs per CPU.",
+      "sources": { "python": "src/obsign_verify/kernel.py" }
+    }
+  }
+}

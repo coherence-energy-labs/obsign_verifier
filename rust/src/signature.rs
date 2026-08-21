@@ -19,11 +19,20 @@
 //!   supplied by whoever hands you the file and is not itself signed, so a missing,
 //!   empty or lying `binds` can only FAIL the comparison, never skip it.
 //!
-//! WHERE THIS IMPLEMENTATION HAD TO DECIDE, because the spec does not say: what to do
-//! when a field of the signature block has the wrong JSON TYPE. A `binds_sha256` that
-//! is a number is not a digest, and a `sig` that is a number is not a signature. Both
-//! are refused here. The reference refuses both; the JavaScript port accepts both and
-//! reports `identity_bound: true` on them. rust/README.md records the divergence.
+//! A FIELD OF THE WRONG JSON TYPE IS A MALFORMED BLOCK, NOT A HINT TO LOOK ELSEWHERE.
+//! A `binds_sha256` that is a number is not a digest, and a `sig` that is a number is
+//! not a signature. Both are refused. This file used to reproduce Python's truthiness
+//! so that a falsy `sig` fell through to a `signature` member -- an emulation of a
+//! synonym fallback that the reference has now DELETED, because a security envelope
+//! with two spellings for one field is a forgery primitive: JavaScript skipped a
+//! non-string `sig` and read the alternate member, so `{"sig": 5, "signature":
+//! "<valid 128-hex>"}` verified there and was refused here. One field, one spelling,
+//! one answer in three implementations.
+//!
+//! AN UNKNOWN `spec` IS UNSUPPORTED, NOT LEGACY v1. This file's own comment used to
+//! record the fall-through as a known gap: an unrecognised spec landed in the v1
+//! branch "which is what both shipped implementations do". All three now refuse it.
+//! An unknown future version must never inherit the weakest historical semantics.
 
 use crate::ed25519;
 use crate::json::{canonical_sha256, integrity, JStr, Value};
@@ -44,10 +53,21 @@ pub const SIG_DOMAIN_V2: &[u8] = b"obsign/signature/v2\x00";
 /// it leaves the two lines a court reads first attested by nothing.
 pub const OUT_OF_CLAIM_FACT: [&str; 1] = ["case"];
 
+/// The two signature envelopes this verifier knows how to read, and NOTHING ELSE. An
+/// ABSENT spec still means v1 -- receipts minted before the field existed are real and
+/// still verify -- but a spec that is present and unrecognised, including one that is
+/// not even a string, is `unsupported`.
+pub const SIG_SPEC_V1: &str = "obsign/signature/v1";
+pub const SIG_SPEC_V2: &str = "obsign/signature/v2";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SigCheck {
     pub present: bool,
     pub valid: bool,
+    /// True only when the envelope names a spec this verifier does not implement.
+    /// Distinct from `valid: false`, which means "I read it and it does not hold";
+    /// this means "I did not read it, and nothing here is a verdict about it".
+    pub unsupported: bool,
     pub identity_bound: bool,
     pub attributed_signer: Option<String>,
     pub claimed_signer: Option<String>,
@@ -61,6 +81,7 @@ impl Default for SigCheck {
         SigCheck {
             present: false,
             valid: false,
+            unsupported: false,
             identity_bound: false,
             attributed_signer: None,
             claimed_signer: None,
@@ -94,19 +115,17 @@ pub fn binds_hash(receipt: &Value, keys: &[String]) -> Option<String> {
     canonical_sha256(&Value::Object(bound)).ok()
 }
 
-/// Python's notion of truth, which the reference's `sig.get("sig") or
-/// sig.get("signature")` relies on to fall back between the two spellings of the
-/// signature member. Reproduced rather than approximated: an empty string there falls
-/// through to the other member, and a NUMBER does not -- it is simply not a signature.
-fn truthy(v: &Value) -> bool {
+/// A short, safe rendering of an attacker-supplied JSON value, for a detail message.
+fn describe(v: Option<&Value>) -> String {
     match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Int(i) => i.text() != "0",
-        Value::Float(f) => *f != 0.0,
-        Value::Str(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(m) => !m.is_empty(),
+        None => "<absent>".into(),
+        Some(Value::Null) => "null".into(),
+        Some(Value::Bool(b)) => b.to_string(),
+        Some(Value::Str(_)) => format!("{:?}", v.and_then(|x| x.as_str()).unwrap_or_default()),
+        Some(Value::Int(i)) => format!("<number {}>", i.text()),
+        Some(Value::Float(f)) => format!("<number {f}>"),
+        Some(Value::Array(_)) => "<array>".into(),
+        Some(Value::Object(_)) => "<object>".into(),
     }
 }
 
@@ -166,28 +185,52 @@ pub fn check(receipt: &Value) -> SigCheck {
         }
     }
 
-    // `sig` first, then `signature`. A member of the wrong TYPE is not a fallback to
-    // the other spelling: it is a malformed block, and malformed is refused. The
-    // reference reads the same way; the JavaScript port skips a non-string `sig` and
-    // falls through to `signature`, which is how the same file verifies there and is
-    // refused here.
-    let candidate = match sig.get("sig") {
-        Some(v) if truthy(v) => Some(v),
-        _ => sig.get("signature"),
+    // THE SPEC IS DECIDED BEFORE ANY OF THE BYTES IT DESCRIBES ARE READ.
+    //
+    // `sig`, `public_key` and `binds_sha256` only MEAN anything relative to a spec that
+    // says what the signature covers. Reading them first and then discovering the spec
+    // is unknown is the same mistake in a different order. A JSON `null` spec reads as
+    // absent, because the reference cannot distinguish the two and the three
+    // implementations must not split over it.
+    let spec_value = match sig.get("spec") {
+        Some(Value::Null) => None,
+        other => other,
     };
-    let sig_hex = candidate.and_then(|v| if v.is_str() { v.as_str() } else { None });
+    let spec: Option<String> = spec_value.and_then(|v| if v.is_str() { v.as_str() } else { None });
+    let known = match spec.as_deref() {
+        Some(SIG_SPEC_V1) | Some(SIG_SPEC_V2) => true,
+        None => spec_value.is_none(), // absent is v1; a non-string spec is not
+        _ => false,
+    };
+    if !known {
+        out.unsupported = true;
+        out.detail = format!(
+            "unsupported signature spec {} - UNVERIFIED, not accepted",
+            describe(spec_value)
+        );
+        return out;
+    }
+
+    // ONE SPELLING PER FIELD -- see the module header. `signature` as a synonym for
+    // `sig` is deleted, and with it the truthiness emulation that existed only to
+    // reproduce the fall-through.
+    let sig_hex = sig.get("sig").and_then(|v| if v.is_str() { v.as_str() } else { None });
     let pub_hex = sig.get("public_key").and_then(|v| if v.is_str() { v.as_str() } else { None });
     let receipt_hash = receipt.get("receipt_sha256").and_then(|v| v.as_str());
     let (sig_hex, pub_hex, receipt_hash) = match (sig_hex, pub_hex, receipt_hash) {
-        (Some(s), Some(p), Some(r)) if !r.is_empty() => (s, p, r),
+        // NON-EMPTY, in all three. An empty string is not a 128-hex signature and not a
+        // 64-hex key; treating it as merely "present" split the implementations, because
+        // the reference then fell into the v1 branch (which populates
+        // `unbound_metadata`) while the JavaScript port returned early (which does not).
+        // Same file, same refusal, two different signature blocks reported.
+        (Some(s), Some(p), Some(r)) if !r.is_empty() && !s.is_empty() && !p.is_empty() => (s, p, r),
         _ => {
             out.detail = "signature block is missing sig/public_key/receipt_sha256".into();
             return out;
         }
     };
 
-    let spec = sig.get("spec").and_then(|v| v.as_str());
-    if spec.as_deref() == Some("obsign/signature/v2") {
+    if spec.as_deref() == Some(SIG_SPEC_V2) {
         let covered = Value::Object(vec![
             ("spec".encode_utf16().collect(), Value::str_of("obsign/signature/v2")),
             ("alg".encode_utf16().collect(), sig.get("alg").cloned().unwrap_or(Value::Null)),
@@ -248,6 +291,29 @@ pub fn check(receipt: &Value) -> SigCheck {
             }
         };
 
+        // A NAME THAT IS NOT THERE IS NOT A BINDING. `binds` lives inside the
+        // `signature` block, which is excluded from `receipt_sha256` and is NOT in
+        // the v2 covered set -- so an attacker rewrites it freely -- and
+        // `binds_hash` skips keys the receipt does not carry. Padding the list with
+        // a name that is absent therefore left the recomputed hash unchanged and
+        // this port reported `bound_metadata: ["case"]` for a signature that bound
+        // nothing, while the reference and the npm port both refused it. One file,
+        // two verdicts, on the identity rung: a forger's choice of verifier.
+        let missing: Vec<String> = binds
+            .iter()
+            .filter(|k| receipt.get(k.as_str()).is_none())
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            out.valid = false;
+            out.detail = format!(
+                "signature `binds` names {} key(s) this receipt does not carry ({}) -                  REFUSED: the bound block was removed since signing, or the list was                  padded to claim a binding that was never hashed",
+                missing.len(),
+                missing.join(", ")
+            );
+            return out;
+        }
+
         let recomputed = binds_hash(receipt, &binds);
         // A `binds_sha256` that is not a string is not a digest. Treating it as absent
         // would let `binds_sha256: 0` be "reproduced" by an empty `binds` list.
@@ -297,12 +363,9 @@ pub fn check(receipt: &Value) -> SigCheck {
         return out;
     }
 
-    // Legacy v1: signs the bare receipt hash. Verifies, attributes NOBODY.
-    //
-    // An UNKNOWN spec string lands here too, which is what both shipped
-    // implementations do and is therefore what this one does. It is not obviously
-    // right -- docs/COMPAT.md says an unknown spec should read `unsupported` -- and
-    // rust/README.md lists it as a spec gap rather than quietly picking a third answer.
+    // Legacy v1 -- reached ONLY by `spec: "obsign/signature/v1"` and by an absent spec,
+    // never by an unknown one (that returned above as UNSUPPORTED). Signs the bare
+    // receipt hash: verifies, and attributes NOBODY.
     let (ok, detail) = ed25519_ok(&pub_hex, &sig_hex, receipt_hash.as_bytes());
     out.valid = ok;
     out.identity_bound = false;

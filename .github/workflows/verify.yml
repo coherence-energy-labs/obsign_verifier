@@ -326,6 +326,134 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check -e ".[dev]"
 
+      # EVERY ACTION IS A COMMIT, AND NOTHING FLOATS TO `latest`.
+      #
+      # `release.yml` pinned every `uses:` to a 40-hex SHA except one: the PyPI publish
+      # action, on the mutable `@release/v1` branch -- inside the ONLY job that holds
+      # `id-token: write`. Whoever can move that branch gets code execution in a context
+      # that mints a PyPI credential scoped to this repository, on the next tag we push,
+      # with nothing in this repository changing. The same job's npm sibling ran
+      # `npm install -g npm@latest` in the step immediately before
+      # `npm publish --provenance`, so the code that used an npm credential was whatever
+      # the registry served at that second.
+      #
+      # Both are fixed. This step is what stops them coming back, because a pin restored
+      # by hand is a pin that gets un-restored by hand. It runs in `gates`, on every push
+      # and every pull request, so a floating ref is caught before a release exists --
+      # `release.yml` only runs on a tag, which is far too late to learn this.
+      #
+      # THE CHECK IS ASSERTED IN BOTH DIRECTIONS. A grep for bad shapes that finds
+      # nothing is indistinguishable from a grep that ran against no files at all, so it
+      # also asserts that it FOUND workflows, that they contained `uses:` lines, and
+      # that it recognised the two credential-holding jobs. A vacuous gate is a dark one.
+      - name: Every action pinned to a commit; nothing floats to latest
+        shell: python
+        run: |
+          import pathlib, re, sys
+
+          wf = sorted(pathlib.Path(".github/workflows").glob("*.yml"))
+          assert wf, "no workflows found -- this check would be vacuous"
+
+          SHA = re.compile(r"^[0-9a-f]{40}$")
+          # `uses:` values that name a local path or a container are not pinnable by SHA.
+          LOCAL = ("./", "docker://")
+          # Assembled rather than written out, because this file is one of the files
+          # being scanned: spelling the token literally here makes the detector match
+          # its own source and fail on a clean repository. A check that cannot PASS is
+          # as dark as one that cannot fail.
+          FLOATING = "@" + "latest"
+
+          uses_seen = 0
+          bad = []
+          for path in wf:
+              for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  stripped = line.strip()
+
+                  m = re.match(r"^-?\s*uses:\s*(\S+)", stripped)
+                  if m:
+                      ref = m.group(1).strip("'\"")
+                      if ref.startswith(LOCAL):
+                          continue
+                      uses_seen += 1
+                      if "@" not in ref or not SHA.match(ref.rsplit("@", 1)[1]):
+                          bad.append(f"{path}:{n}: `uses: {ref}` is not pinned to a "
+                                     f"40-hex commit SHA")
+
+                  # A floating tag anywhere in an executed line -- an npm global
+                  # install, a pip install, an action ref. Checked on every line rather
+                  # than only on `run:` headers, because a `run: |` block's BODY is
+                  # where it actually appeared.
+                  if FLOATING in stripped and not stripped.startswith("#"):
+                      bad.append(f"{path}:{n}: resolves a dependency at run time "
+                                 f"('{FLOATING}') -- pin the version")
+
+          assert uses_seen >= 10, (
+              f"only {uses_seen} `uses:` line(s) inspected across {len(wf)} workflow(s) "
+              f"-- the scan is not reading what it claims to")
+
+          # The two jobs that hold a publishing credential must still exist and must
+          # still be the ones this check is about. If they are renamed away, the check
+          # above keeps passing while guarding nothing.
+          # COMMENTS ARE NOT EVIDENCE. Searched over EXECUTED lines only: this file's
+          # own prose names `npm publish --provenance`, and so does release.yml's, so a
+          # whole-text search stayed satisfied after the flag was deleted from the
+          # command -- a guard held up by the sentence describing it.
+          release = [ln.strip() for ln
+                     in pathlib.Path(".github/workflows/release.yml")
+                     .read_text(encoding="utf-8").splitlines()
+                     if ln.strip() and not ln.strip().startswith("#")]
+          for needle in ("id-token: write", "pypa/gh-action-pypi-publish@",
+                         "npm publish --provenance"):
+              assert any(needle in ln for ln in release), (
+                  f"release.yml no longer runs {needle!r} -- this gate is guarding "
+                  f"a workflow that has moved, which is the same as guarding nothing")
+
+          # And the Rust toolchain, the last unpinned input to the third implementation.
+          tc = pathlib.Path("rust-toolchain.toml")
+          assert tc.is_file(), "rust-toolchain.toml is missing -- the compiler is unpinned"
+          channel = re.search(r'(?m)^channel\s*=\s*"([^"]+)"',
+                              tc.read_text(encoding="utf-8"))
+          assert channel and re.fullmatch(r"\d+\.\d+(\.\d+)?", channel.group(1)), (
+              "rust-toolchain.toml must pin an exact version, not a moving channel "
+              "like 'stable' or 'nightly'")
+
+          # THE BUILD TOOLCHAIN IS A DEPENDENCY TOO. `build` and `twine` PRODUCE and
+          # inspect the artifact this repository publishes under its own name, and they
+          # were installed unversioned -- so the bytes a stranger downloads depended on
+          # whatever the index served at that moment. Only the packages named here are
+          # required to carry `==`: `pip install -e ".[dev]"` is the repository itself
+          # and is pinned by `pyproject.toml`, not by a command line.
+          MUST_PIN = ("build", "twine")
+          INSTALL = "pip" + " install"      # assembled: this file is scanned by itself
+          pinned_seen = 0
+          for path in wf:
+              for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  s = line.strip()
+                  if s.startswith("#") or INSTALL not in s:
+                      continue
+                  for name, version in re.findall(
+                          r"(?<![\w./\"'-])([A-Za-z][A-Za-z0-9_.-]*)"
+                          r"(==[^\s\"']+)?(?=\s|$)", s):
+                      if name not in MUST_PIN:
+                          continue
+                      if version:
+                          pinned_seen += 1
+                      else:
+                          bad.append(f"{path}:{n}: `{name}` is installed without an "
+                                     f"exact `==` version")
+
+          # If the release workflow stops installing them at all this check has nothing
+          # left to guard, and would go green by finding nothing.
+          assert pinned_seen + len(bad) >= len(MUST_PIN), (
+              f"no pinned build tool found in any workflow (looked for "
+              f"{', '.join(MUST_PIN)}) -- this half of the gate is dark")
+
+          if bad:
+              sys.exit("unpinned dependencies in CI:\n  " + "\n  ".join(bad))
+          print(f"{uses_seen} action reference(s) across {len(wf)} workflow(s) pinned to "
+                f"commit SHAs; no floating tags; {'/'.join(MUST_PIN)} pinned; "
+                f"rust toolchain {channel.group(1)}")
+
       # A live ANTHROPIC_API_KEY reached this repository's history on 2026-08-01, inside
       # a commit MESSAGE -- spliced there by backtick command substitution in an unquoted
       # bash heredoc. Every file-based scanner walked past it, because no file was ever

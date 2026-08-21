@@ -131,6 +131,14 @@ pub struct Program {
     code: Vec<Ins>,
 }
 
+impl Program {
+    /// How many instructions a run re-validates before it retires the first one.
+    /// The probe's cost model charges for this; see `verify::probe_cost`.
+    pub fn code_len(&self) -> usize {
+        self.code.len()
+    }
+}
+
 /// A STRUCTURAL integer: a memory size, a step budget, a window bound, an operand.
 ///
 /// It must be a JSON integer literal. Reading a JSON `true` as 1 (which Python's
@@ -341,6 +349,31 @@ pub fn run_counted(prog: &Value, inputs: &[i64], step_cap: Option<u64>) -> T<(Ve
 }
 
 pub fn run_validated(p: &Program, inputs: &[i64], step_cap: Option<u64>) -> T<(Vec<i64>, u64)> {
+    let mut steps: u64 = 0;
+    let out = run_inner(p, inputs, step_cap, &mut steps)?;
+    Ok((out, steps))
+}
+
+/// The same execution, reporting the retired step count EVEN WHEN THE RUN TRAPS.
+///
+/// The liveness probe has to charge itself for a refused run too, and charging the
+/// step CAP instead over-bills a trap that happened on instruction three by five
+/// orders of magnitude. Over-billing sounds like the safe direction and is not: it
+/// exhausts the probe budget early, and an exhausted budget reports "indeterminate",
+/// which does NOT refuse, in place of the "guarded" that does. `replay.py`'s `Trap`
+/// carries the same number for the same reason.
+pub fn run_probed(p: &Program, inputs: &[i64], step_cap: Option<u64>) -> (T<Vec<i64>>, u64) {
+    let mut steps: u64 = 0;
+    let r = run_inner(p, inputs, step_cap, &mut steps);
+    (r, steps)
+}
+
+fn run_inner(
+    p: &Program,
+    inputs: &[i64],
+    step_cap: Option<u64>,
+    steps: &mut u64,
+) -> T<Vec<i64>> {
     let mut mem = vec![0i64; p.mem];
     let budget = match step_cap {
         Some(c) => p.steps.min(c),
@@ -359,16 +392,15 @@ pub fn run_validated(p: &Program, inputs: &[i64], step_cap: Option<u64>) -> T<(V
     }
 
     let mut pc: i64 = 0;
-    let mut steps: u64 = 0;
     let code = &p.code;
     loop {
         // Budget, then count, then the program-counter check -- the same order as the
         // reference, so a program that both exhausts its budget and runs off the end
         // traps for the same reason in every implementation.
-        if steps >= budget {
+        if *steps >= budget {
             return trap(format!("step budget exhausted after {budget} steps"));
         }
-        steps += 1;
+        *steps += 1;
         if pc < 0 || pc >= code.len() as i64 {
             return trap(format!("pc {pc} left the program"));
         }
@@ -482,7 +514,7 @@ pub fn run_validated(p: &Program, inputs: &[i64], step_cap: Option<u64>) -> T<(V
         }
     }
 
-    Ok((mem[p.out_off..p.out_off + p.out_len].to_vec(), steps))
+    Ok(mem[p.out_off..p.out_off + p.out_len].to_vec())
 }
 
 pub fn run(prog: &Value, inputs: &[i64]) -> T<Vec<i64>> {

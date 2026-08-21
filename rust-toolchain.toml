@@ -1,0 +1,36 @@
+# The Rust toolchain this crate is built and tested with, pinned.
+#
+# WHY A PIN AND NOT `stable`. The Rust crate is the THIRD reading of this receipt
+# format, and its whole job is to disagree with the other two when one of them is
+# wrong. That only works if a disagreement means "the implementations differ" and
+# never "the compiler moved": with `stable`, a differential that goes red six weeks
+# from now has two candidate causes, and the expensive one to rule out is the one
+# nobody changed. `rust/Cargo.lock` already pins the dependency graph (there are no
+# dependencies -- the SHA-2 and the Ed25519 are hand-written -- so the lock file pins
+# nothing at all), and CI already builds `--locked`. The toolchain was the last
+# unpinned input to a binary whose output is compared byte for byte against Python
+# and JavaScript.
+#
+# It also pins something subtler that this crate depends on by design. `Cargo.toml`
+# sets `overflow-checks = true` in release so an UNINTENDED overflow is a panic in
+# testing rather than a wrong number in the field; the machine's INTENDED wrapping
+# (`INT64_MAX + 1 == INT64_MIN`, `ABS(INT64_MIN) == INT64_MIN`) is written with
+# explicit `wrapping_*` operations. Which of those two a given expression gets is a
+# property of the compiler's constant folding and lint behaviour as much as of the
+# source, and "the arithmetic is identical on every machine" is this kernel's entire
+# claim. Pinning the compiler makes that claim about a compiler.
+#
+# 1.96.0 is the toolchain the crate was last built and its 38 tests last passed on
+# (`rustc --version` on the development machine, 2026-08-20). Bumping it is a
+# deliberate act: change this file, re-run `cargo test --release --locked` and the
+# three-way differential, and record the new version.
+#
+# `docs/SPEC.md#conformance` names what this crate does and does not implement.
+#
+# The channel is the only thing pinned. No `components` are requested: nothing in this
+# repository runs `rustfmt` or `clippy`, and listing a component makes every fresh
+# checkout download one to satisfy a pin no job reads -- a cost with no check behind it.
+
+[toolchain]
+channel = "1.96.0"
+profile = "minimal"

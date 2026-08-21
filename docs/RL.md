@@ -145,8 +145,18 @@ a receipt's bytecode is tied to readable source anyone can audit.
 
 ## Limits, stated plainly
 
-The machine has 26 opcodes, one flat int64 memory of at most 2^20 cells, and no call
-stack — so no recursion, no dynamic allocation, no strings, no I/O, and `mulfx` is
-the only widening operation (there is no 128-bit divide, hence no `divfx`). These are
-the *machine's* limits; changing them is a receipt-format revision across four
-implementations, not a compiler feature.
+The machine has 31 opcodes, one flat int64 memory of at most 2^20 cells, at most 2^16
+instructions, a hard ceiling of 50,000,000 steps, and no call stack — so no recursion,
+no dynamic allocation, no strings, no I/O, and `mulfx` is the only widening operation
+(there is no 128-bit divide, hence no `divfx`). These are the *machine's* limits;
+changing them is a receipt-format revision across four implementations, not a compiler
+feature.
+
+The instruction set itself — every opcode by name, arity and exact semantics — is
+`docs/SPEC.md#the-instruction-set`, and the machine-readable table it renders is
+`docs/spec/opcodes.json`. The sentence above read "26" for the entire life of a
+31-opcode machine, in a section titled *stated plainly*, while `docs/COMPAT.md` said 31
+three files away. Prose cannot hold a number still, so the count is now extracted from
+this document and from COMPAT.md and compared against the reference table by
+`tests/test_spec_constants_match_code.py`: the check fails if either document is wrong,
+and it also fails if either stops stating a count at all.

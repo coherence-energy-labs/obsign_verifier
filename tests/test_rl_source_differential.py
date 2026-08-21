@@ -87,7 +87,12 @@ _CORPUS = _HERE / "corpus" / "rl_source"
 #: same compiled program, by another author, native i64 with overflow-checks on rather
 #: than arbitrary-precision-then-wrap. Never built here and never required: this file
 #: must not make `pytest -q` wait on a compiler.
-_RUST = _REPO / "rust" / "target" / "release" / "obsign-verify-rs"
+#: `.exe` on Windows. Not naming it is not a cosmetic slip: `_RUST.is_file()` was
+#: False after a perfectly successful `cargo build --release`, so this column reported
+#: "the rust binary is not built" and SKIPPED -- and a skip reads like a pass in every
+#: summary line. The tie-break column was dark on the platform the CI matrix declares.
+_RUST = _REPO / "rust" / "target" / "release" / (
+    "obsign-verify-rs.exe" if sys.platform == "win32" else "obsign-verify-rs")
 _HAS_RUST = _RUST.is_file() and os.access(_RUST, os.X_OK)
 
 _HAS_NODE = shutil.which("node") is not None
@@ -364,7 +369,8 @@ def test_the_javascript_vm_agrees_with_the_python_side(seed):
     tmp = Path(name)
     try:
         tmp.write_text(json.dumps(cases), encoding="utf-8")
-        proc = subprocess.run(["node", str(_RUNNER), str(tmp)], capture_output=True,
+        proc = subprocess.run(["node", str(_RUNNER), str(tmp)], encoding="utf-8",
+                              capture_output=True,
                               text=True, timeout=900, check=False)
     finally:
         tmp.unlink(missing_ok=True)
@@ -587,6 +593,7 @@ def test_the_rust_vm_agrees_with_the_python_vm(seed):
     try:
         tmp.write_text(json.dumps(cases), encoding="utf-8")
         proc = subprocess.run([str(_RUST), "--harness", "vm", str(tmp)],
+                              encoding="utf-8",
                               capture_output=True, text=True, timeout=900, check=False)
     finally:
         tmp.unlink(missing_ok=True)

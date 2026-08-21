@@ -73,6 +73,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -96,8 +97,14 @@ _SEEDS = int(os.environ.get("OBSIGN_FUZZ_SEEDS", "5" if _FULL else "1"))
 def _browser_path() -> Path | None:
     """The producer's verify page, if this checkout can see it."""
     env = os.environ.get("OBSIGN_WEB_VERIFY_CORE")
+    # The sibling checkout has more than one name. Looking for exactly one of them meant
+    # the BROWSER column -- the parser a stranger actually reaches, and the one that had
+    # no wire-format limits table at all -- was silently absent on a machine where the
+    # producer repository was sitting right next door under its other name. An absent
+    # column is skipped, and a skip reads like a pass.
     for cand in ([Path(env)] if env else []) + [
-            _REPO.parent / "obsign" / "web" / "verify" / "verify-core.js"]:
+            _REPO.parent / "obsign" / "web" / "verify" / "verify-core.js",
+            _REPO.parent / "coherence_compute" / "web" / "verify" / "verify-core.js"]:
         if cand.is_file():
             return cand.resolve()
     return None
@@ -109,7 +116,12 @@ _BROWSER = _browser_path()
 #: a fourth reading of the wire format and a welcome one, but this file must not make
 #: `pytest -q` wait on a compiler, and it must not fail because a sibling crate is
 #: mid-edit. Present-and-executable or absent; nothing in between.
-_RUST = _REPO / "rust" / "target" / "release" / "obsign-verify-rs"
+#: `.exe` on Windows. Not naming it is not a cosmetic slip: `_RUST.is_file()` was
+#: False after a perfectly successful `cargo build --release`, so this column reported
+#: "the rust binary is not built" and SKIPPED -- and a skip reads like a pass in every
+#: summary line. The tie-break column was dark on the platform the CI matrix declares.
+_RUST = _REPO / "rust" / "target" / "release" / (
+    "obsign-verify-rs.exe" if sys.platform == "win32" else "obsign-verify-rs")
 _HAS_RUST = _RUST.is_file() and os.access(_RUST, os.X_OK)
 
 
@@ -156,8 +168,13 @@ def node_columns(cases: list[tuple[str, str]], as_files: bool = False) -> list[d
         argv = ["node", str(_RUNNER), str(tmp)]
         if _BROWSER is not None:
             argv.append(str(_BROWSER))
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=900,
-                              check=False)
+        # `encoding="utf-8"`, explicitly. `text=True` alone decodes with the LOCALE
+        # codec -- cp1252 on a Windows runner -- and this corpus deliberately carries
+        # astral characters and escaped surrogates, so the reader thread died with
+        # `UnicodeDecodeError: 'charmap' codec can't decode byte 0x90` before a single
+        # document was compared. The runners emit UTF-8 JSON; read it as UTF-8.
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              timeout=900, check=False)
     finally:
         tmp.unlink(missing_ok=True)
     assert proc.returncode == 0, (proc.stdout[-2000:] + proc.stderr[-2000:])
@@ -191,8 +208,8 @@ def rust_columns(cases: list[tuple[str, str]]) -> dict[str, dict]:
         got = {}
         for mode in ("load", "canon"):
             proc = subprocess.run([str(_RUST), "--harness", mode, str(tmp)],
-                                  capture_output=True, text=True, timeout=900,
-                                  check=False)
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  timeout=900, check=False)
             if proc.returncode != 0:
                 return {}
             got[mode] = json.loads(proc.stdout.strip().splitlines()[-1])

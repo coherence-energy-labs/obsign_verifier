@@ -29,6 +29,24 @@ const { canonicalSha256, claimOf, integrity, isObj } = require('./canonical.js')
 const SUPPORTED_ALGS = new Set(['ed25519']);
 
 /**
+ * The two signature envelopes this verifier knows how to read, and NOTHING ELSE.
+ *
+ * THE FALL-THROUGH THAT USED TO BE HERE IS THE DEFECT. The dispatch read
+ * `if (spec === SIG_SPEC_V2) {...} else { legacy v1 }`, so `obsign/signature/v9` -- a
+ * spec this code has never seen, whose covered attribute set nobody here can
+ * enumerate -- was verified under the WEAKEST envelope the format has ever had: v1
+ * signs the bare `receipt_sha256` and covers neither the signer nor the case block.
+ * An unknown future version must never inherit that.
+ *
+ * An ABSENT spec (or a JSON `null`) still means v1, because receipts minted before
+ * the field existed are real and still verify. A spec that is present and
+ * unrecognised -- including one that is not a string at all -- is `unsupported`.
+ */
+const SIG_SPEC_V1 = 'obsign/signature/v1';
+const SIG_SPEC_V2 = 'obsign/signature/v2';
+const SUPPORTED_SIG_SPECS = new Set([SIG_SPEC_V1, SIG_SPEC_V2]);
+
+/**
  * The v2 message is the domain tag followed by the canonical hash of the covered
  * attribute set. THE TAG IS A CROSS-IMPLEMENTATION CONTRACT: the producer, the
  * Python verifier and this file must produce byte-identical messages. They did not
@@ -120,10 +138,31 @@ function str(map, key) {
   return typeof v === 'string' ? v : null;
 }
 
+/** A short, SAFE rendering of an attacker-supplied JSON value, for a detail message.
+ *
+ * `JSON.stringify` is not safe here: the parse tree carries JSON integers as BigInt
+ * inside a `{__n}` wrapper, and `JSON.stringify` THROWS on a BigInt -- out of a
+ * function whose contract is that it never throws. So the shape is named rather than
+ * serialised, except for the string case, which is the only one a reader needs
+ * quoted. */
+function describe(v) {
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (v === null) return 'null';
+  if (typeof v === 'boolean') return String(v);
+  if (v && typeof v === 'object' && '__n' in v) return `<number ${String(v.v)}>`;
+  if (Array.isArray(v)) return '<array>';
+  if (v && v.__obj instanceof Map) return '<object>';
+  return `<${typeof v}>`;
+}
+
 /** Step 3 of the ladder. Returns a plain object; never throws. */
 function check(receipt) {
   const out = {
     present: false, valid: false, identity_bound: false,
+    // True only when the envelope names a spec this verifier does not implement.
+    // Distinct from `valid: false`, which means "I read it and it does not hold";
+    // this means "I did not read it, and nothing here is a verdict about it".
+    unsupported: false,
     attributed_signer: null, claimed_signer: null, detail: '',
     bound_metadata: [], unbound_metadata: [],
     // the COMPUTED set (see unattestedKeys); `unbound_metadata` stays the
@@ -162,7 +201,30 @@ function check(receipt) {
     return out;
   }
 
-  const sigHex = str(sig, 'sig') || str(sig, 'signature');
+  // THE SPEC IS DECIDED BEFORE ANY OF THE BYTES IT DESCRIBES ARE READ.
+  //
+  // `sig`, `public_key` and `binds_sha256` only MEAN anything relative to a spec that
+  // says what the signature covers. Read RAW, not through `str()`: a non-string spec
+  // read as null would be indistinguishable from an absent one and would inherit v1.
+  const specRaw = sig.get('spec');
+  const spec = (specRaw === undefined || specRaw === null) ? null : specRaw;
+  if (spec !== null && !(typeof spec === 'string' && SUPPORTED_SIG_SPECS.has(spec))) {
+    out.unsupported = true;
+    out.detail = `unsupported signature spec ${describe(spec)}`
+      + ' - UNVERIFIED, not accepted';
+    return out;
+  }
+
+  // ONE SPELLING PER FIELD. This read `str(sig,'sig') || str(sig,'signature')`, and a
+  // synonym fallback in a security envelope is a forgery primitive: a non-STRING
+  // `sig` made `str()` return null, so `{"sig": 5, "signature": "<valid 128-hex>"}`
+  // fell through to the alternate member and VERIFIED HERE while the Python reference
+  // and the Rust port both refused the same bytes -- the same file, two verdicts,
+  // forger's choice of verifier. No receipt ever produced by anything carried
+  // `signature` inside the signature block, so the fallback is deleted rather than
+  // harmonised: the hex lives in `sig`, it is a string, and anything else is
+  // malformed.
+  const sigHex = str(sig, 'sig');
   const pubHex = str(sig, 'public_key');
   const receiptHash = str(receipt.__obj, 'receipt_sha256');
   if (!sigHex || !pubHex || !receiptHash) {
@@ -170,8 +232,7 @@ function check(receipt) {
     return out;
   }
 
-  const spec = str(sig, 'spec');
-  if (spec === 'obsign/signature/v2') {
+  if (spec === SIG_SPEC_V2) {
     const covered = new Map([
       ['spec', spec], ['alg', sig.get('alg')], ['public_key', pubHex],
       ['receipt_sha256', receiptHash], ['signer', sig.get('signer') ?? null],
@@ -252,7 +313,9 @@ function check(receipt) {
     return out;
   }
 
-  // Legacy v1: signs the bare receipt hash. Verifies, attributes NOBODY.
+  // Legacy v1 -- reached ONLY by `spec: "obsign/signature/v1"` and by an absent spec,
+  // never by an unknown one (that returned above). Signs the bare receipt hash:
+  // verifies, and attributes NOBODY.
   const [ok, detail] = ed25519Ok(pubHex, sigHex, Buffer.from(receiptHash, 'ascii'));
   out.valid = ok;
   out.identity_bound = false;
@@ -268,4 +331,7 @@ function check(receipt) {
   return out;
 }
 
-module.exports = { check, bindsHash, unattestedKeys, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT };
+module.exports = {
+  check, bindsHash, unattestedKeys, SUPPORTED_ALGS, SIG_DOMAIN_V2, OUT_OF_CLAIM_FACT,
+  SIG_SPEC_V1, SIG_SPEC_V2, SUPPORTED_SIG_SPECS,
+};

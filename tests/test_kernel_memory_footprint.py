@@ -30,7 +30,6 @@ opinion of itself.
 """
 from __future__ import annotations
 
-import resource
 import subprocess
 import sys
 
@@ -39,6 +38,87 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from obsign_verify.kernel import MAX_GRID, array_sha256, build_fixed_inputs, evolve
+
+# ------------------------------------------------------------------ peak RSS, portably
+#
+# `import resource` is POSIX-only, and at MODULE level it does not merely skip this
+# file on Windows -- it is an ImportError during collection, which aborts the WHOLE
+# pytest run. The 529 tests in this suite were unreachable on the platform the CI
+# matrix declares (windows-latest), so every gate here was dark there.
+#
+# The lazy answer is to skip the memory tests off POSIX. That would make the one gate
+# standing between a stranger and a 1.7 GiB allocation delivered through a ~200-byte
+# file pass by not running, on the platform most likely to be a desktop. Windows
+# reports the same quantity through `GetProcessMemoryInfo`, so the measurement is
+# ported rather than dropped, and the skip is reserved for a platform that offers
+# NEITHER -- where it is named, and says which call is missing.
+
+def _peak_rss_mib() -> float | None:
+    """Peak resident set of THIS process, in MiB, or None if the OS will not say.
+
+    POSIX: `ru_maxrss` (KiB on Linux, bytes on macOS -- both handled).
+    Windows: `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`, the same "high-water mark
+    of physical pages held" quantity, in bytes.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class _PMC(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD),
+                        ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        counters = _PMC()
+        counters.cb = ctypes.sizeof(_PMC)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        handle = ctypes.WinDLL("kernel32", use_last_error=True).GetCurrentProcess()
+        if not psapi.GetProcessMemoryInfo(wintypes.HANDLE(handle),
+                                          ctypes.byref(counters), counters.cb):
+            return None
+        return counters.PeakWorkingSetSize / 1024 / 1024
+    try:
+        import resource
+    except ImportError:                      # neither POSIX nor Windows
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # Linux reports KiB, macOS reports bytes. Nothing reports MiB, so pick by size.
+    return (peak / 1024 / 1024) if sys.platform == "darwin" else (peak / 1024)
+
+
+#: The source of the same measurement, to run inside a subprocess. Written out rather
+#: than imported so the child needs nothing on its path but the package under test.
+_PEAK_SRC = (
+    "import sys\n"
+    "def peak_mib():\n"
+    "    if sys.platform == 'win32':\n"
+    "        import ctypes\n"
+    "        from ctypes import wintypes\n"
+    "        class P(ctypes.Structure):\n"
+    "            _fields_ = [('cb', wintypes.DWORD), ('f', wintypes.DWORD)] + [\n"
+    "                (n, ctypes.c_size_t) for n in\n"
+    "                ('peak', 'ws', 'qppp', 'qpp', 'qpnp', 'qnp', 'pf', 'ppf')]\n"
+    "        c = P(); c.cb = ctypes.sizeof(P)\n"
+    "        h = ctypes.WinDLL('kernel32').GetCurrentProcess()\n"
+    "        ctypes.WinDLL('psapi').GetProcessMemoryInfo(\n"
+    "            wintypes.HANDLE(h), ctypes.byref(c), c.cb)\n"
+    "        return c.peak / 1024 / 1024\n"
+    "    import resource\n"
+    "    p = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+    "    return p / 1024 / 1024 if sys.platform == 'darwin' else p / 1024\n")
+
+_no_peak = pytest.mark.skipif(
+    _peak_rss_mib() is None,
+    reason="this OS exposes neither getrusage(RUSAGE_SELF).ru_maxrss (POSIX) nor "
+           "GetProcessMemoryInfo.PeakWorkingSetSize (Windows), so peak RSS cannot "
+           "be measured here -- the bit-exactness tests in this file still run")
 
 
 def _reference_evolve(inp: dict):
@@ -106,6 +186,7 @@ def test_the_low_footprint_evolve_is_bit_identical(params):
     assert np.array_equal(got, want)
 
 
+@_no_peak
 def test_a_receipt_at_the_admitted_grid_does_not_cost_a_gigabyte():
     """THE EXPLOIT, measured. `grid` 4096 is inside the envelope -- and this is only
     a sixteenth of the admitted grid*grid*steps -- so nothing here is refused; the
@@ -114,15 +195,16 @@ def test_a_receipt_at_the_admitted_grid_does_not_cost_a_gigabyte():
     assert one_array_mib > 100, "precondition: one array at the admitted grid is large"
 
     code = (
-        "import resource, json\n"
+        _PEAK_SRC
+        + "import json\n"
         "from obsign_verify.kernel import build_fixed_inputs, evolve\n"
         "p = {'grid': %d, 'steps': 2, 'frac_bits': 24,\n"
         "     'sources': [[0.5, 0.5, 1.0, 0.2]], 'D': 0.1, 'gamma': 0.1, 'dt': 0.1}\n"
         "evolve(build_fixed_inputs(p))\n"
-        "print(json.dumps({'mib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024}))\n"
+        "print(json.dumps({'mib': peak_mib()}))\n"
         % MAX_GRID)
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                          text=True, timeout=1800)
+                          text=True, timeout=1800, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr[-2000:]
     import json
     peak = json.loads(proc.stdout.strip().splitlines()[-1])["mib"]
@@ -139,12 +221,13 @@ def test_a_receipt_at_the_admitted_grid_does_not_cost_a_gigabyte():
         f"stop is still reachable inside them.")
 
 
+@_no_peak
 def test_the_peak_is_reported_for_the_record():
     """Not an assertion, a measurement: `pytest -s` prints what a verifier pays."""
-    peak_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    peak_before = _peak_rss_mib()
     inp = build_fixed_inputs({"grid": 512, "steps": 4, "frac_bits": 24,
                               "sources": [[0.5, 0.5, 1.0, 0.2]],
                               "D": 0.1, "gamma": 0.1, "dt": 0.1})
     evolve(inp)
-    peak_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    peak_after = _peak_rss_mib()
     print(f"\ngrid 512: peak RSS {peak_before:.0f} -> {peak_after:.0f} MiB")

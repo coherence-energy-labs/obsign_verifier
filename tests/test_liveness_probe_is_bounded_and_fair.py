@@ -237,6 +237,16 @@ def test_an_honest_program_is_still_found_live():
 
 # ------------------------------------------------------------------ 4. JS parity
 
+#: The four receipts the probe's whole design turns on: two honest ones the pre-fix
+#: absolute ladder accused of being constants, and the two attacks it exists to refuse.
+_PARITY_CASES = (
+    ("coarse", _COARSE, [_CENTS]),
+    ("coarse-guarded", _COARSE_GUARDED, [_CENTS + 400, 400]),
+    ("bare-constant", "input a, b; output 424242;", [5, 7]),
+    ("honest", "input a, b; output a * 3 + b;", [5, 7]),
+)
+
+
 @_needs_node
 def test_javascript_reaches_the_same_liveness_verdict(tmp_path):
     """The two implementations must not disagree about which receipts exist. A
@@ -244,20 +254,81 @@ def test_javascript_reaches_the_same_liveness_verdict(tmp_path):
     split this format cannot absorb."""
     import json
 
-    for name, src, inputs in (
-        ("coarse", _COARSE, [_CENTS]),
-        ("coarse-guarded", _COARSE_GUARDED, [_CENTS + 400, 400]),
-        ("bare-constant", "input a, b; output 424242;", [5, 7]),
-        ("honest", "input a, b; output a * 3 + b;", [5, 7]),
-    ):
+    for name, src, inputs in _PARITY_CASES:
         receipt = mint.replay_receipt(compile_source(src), inputs)
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps(receipt), encoding="utf-8")
         proc = subprocess.run(
             ["node", "js/bin/obsign-verify.js", "--json", str(path)],
-            capture_output=True, text=True, timeout=600, check=False)
+            capture_output=True, text=True, encoding="utf-8", timeout=600, check=False)
         js = json.loads(proc.stdout)[0]
         py = verify(receipt)
         assert (py["verified"], py["input_liveness"]) == (js["verified"], js["input_liveness"]), (
             f"{name}: python={py['verified']}/{py['input_liveness']} "
             f"javascript={js['verified']}/{js['input_liveness']}")
+
+
+def test_rust_reaches_the_same_liveness_verdict(tmp_path):
+    """THE THIRD LEG, on the exact receipts the port was about.
+
+    `rust/src/verify.rs` carried the PRE-FIX probe until this branch: seven fixed
+    absolute perturbations capped at 1,000,000, and a budget denominated in VM steps.
+    On `_COARSE` -- an honest total held in cents and reported in hundreds of millions
+    -- nothing the old ladder tried could move the answer, so that implementation
+    reported "dead" and REFUSED a receipt the other two verify. The three-way
+    differential could not see it as a finding because the two liveness columns were
+    softened for the whole corpus.
+
+    This is the direct check, on four receipts rather than on a projection: the two
+    honest coarse ones must be accepted by all three and the two attacks refused.
+    """
+    import json
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    name = "obsign-verify-rs" + (".exe" if sys.platform == "win32" else "")
+    exe = repo / "rust" / "target" / "release" / name
+    if not exe.is_file():
+        if "rust" in _REQUIRED:
+            raise AssertionError("OBSIGN_REQUIRE=rust was set but the release binary "
+                                 "is not built -- a skip reads like a pass")
+        pytest.skip(f"{exe} is not built (cargo build --release in rust/)")
+
+    job = []
+    expected = {}
+    for label, src, inputs in _PARITY_CASES:
+        receipt = mint.replay_receipt(compile_source(src), inputs)
+        job.append([label, json.dumps(receipt)])
+        expected[label] = verify(receipt)
+    path = tmp_path / "job.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+
+    proc = subprocess.run([str(exe), "--harness", "verify", str(path)],
+                          capture_output=True, text=True, encoding="utf-8",
+                          timeout=900, check=False)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    rust = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    for label, _src, _inputs in _PARITY_CASES:
+        py, rs = expected[label], rust[label]["verdict"]
+        assert (py["verified"], py["input_liveness"],
+                list(py["input_liveness_by_input"]),
+                list(py["output_liveness_by_cell"])) == (
+            rs["verified"], rs["input_liveness"],
+            list(rs["input_liveness_by_input"]),
+            list(rs["output_liveness_by_cell"])), (
+            f"{label}: python={py['verified']}/{py['input_liveness']}/"
+            f"{py['input_liveness_by_input']} "
+            f"rust={rs['verified']}/{rs['input_liveness']}/"
+            f"{rs['input_liveness_by_input']}")
+
+    # ...and the pair must not agree by agreeing on nothing. Agreement on a refusal is
+    # much cheaper than agreement on a pass: two implementations that both crash agree
+    # perfectly. The three honest receipts VERIFY and the bare constant is REFUSED, and
+    # both halves are named so that losing either fails here.
+    got = {lbl: expected[lbl]["verified"] for lbl in expected}
+    assert got == {"coarse": True, "coarse-guarded": True, "honest": True,
+                   "bare-constant": False}, (
+        f"the parity corpus changed shape: {got}. If nothing here verifies, this check "
+        f"compares refusals only -- which implementations that all refuse everything "
+        f"would also pass.")

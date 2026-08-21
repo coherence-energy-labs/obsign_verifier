@@ -53,6 +53,7 @@ def _run_js(cases: list[dict]) -> list[dict]:
     try:
         tmp.write_text(json.dumps(cases), encoding="utf-8")
         proc = subprocess.run(["node", str(_RUNNER), str(tmp)],
+                              encoding="utf-8",
                               capture_output=True, text=True, timeout=120, check=False)
     finally:
         tmp.unlink(missing_ok=True)

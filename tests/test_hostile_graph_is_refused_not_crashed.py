@@ -80,17 +80,65 @@ def test_a_deep_chain_is_refused_rather_than_crashing_the_verifier():
 
 
 def test_the_chain_cli_exits_with_a_verdict_not_a_traceback(tmp_path):
-    """The interface is the exit code. A traceback is neither 0 nor 1 on purpose."""
-    paths = []
+    """The interface is the exit code. A traceback is neither 0 nor 1 on purpose.
+
+    THE DEPTH IS THE POINT, SO THE DEPTH IS NOT REDUCED. Naming ~3,000 absolute paths
+    in argv is past Windows' 8,191-character command line, and the CLI then died with
+    `[WinError 206] The filename or extension is too long` -- a refusal to RUN, which
+    is not a verdict either, and which would have read as "the deep-chain guard fails
+    on Windows" when the guard was never reached. Lowering the depth would have made
+    the test pass by no longer exercising the property it exists for.
+
+    `--chain-list FILE` delivers the same argument list through a channel with no
+    length limit, and exists in all three CLIs for exactly this reason.
+    """
+    listing = tmp_path / "chain.txt"
+    names = []
     for i, receipt in enumerate(_chain(sys.getrecursionlimit() * 3)):
         p = tmp_path / f"r{i:05d}.json"
         p.write_text(json.dumps(receipt), encoding="utf-8")
-        paths.append(str(p))
+        names.append(p.name)
+    listing.write_text("\n".join(names), encoding="utf-8")
+    assert len(names) > 2000, "precondition: the chain is deep enough to overflow argv"
+
     proc = subprocess.run([sys.executable, "-m", "obsign_verify.cli", "--chain",
-                           "--quiet", *paths],
-                          capture_output=True, text=True, timeout=1800, check=False)
-    assert proc.returncode == 1, (proc.returncode, proc.stderr[-2000:])
+                           "--quiet", "--chain-list", listing.name],
+                          cwd=tmp_path, capture_output=True, text=True,
+                          encoding="utf-8", timeout=1800, check=False)
+    assert proc.returncode == 1, (proc.returncode, proc.stdout[-2000:],
+                                  proc.stderr[-2000:])
     assert "Traceback" not in proc.stderr, proc.stderr[-2000:]
+
+
+def test_the_chain_list_option_reads_the_same_receipts_argv_would(tmp_path):
+    """`--chain-list` must be the argument list, not a second, laxer door.
+
+    A transport that quietly dropped receipts would make the test above pass by
+    verifying a SHORTER chain -- the exact failure the option exists to prevent. So a
+    chain small enough for argv is run BOTH ways and the two reports are compared
+    node for node.
+    """
+    receipts = _chain(6)
+    names = []
+    for i, receipt in enumerate(receipts):
+        p = tmp_path / f"n{i:03d}.json"
+        p.write_text(json.dumps(receipt), encoding="utf-8")
+        names.append(p.name)
+    (tmp_path / "list.txt").write_text(
+        "# a comment and a blank line must be ignored\n\n" + "\n".join(names) + "\n",
+        encoding="utf-8")
+
+    def run(argv):
+        return subprocess.run([sys.executable, "-m", "obsign_verify.cli", "--chain",
+                               "--json", *argv], cwd=tmp_path, capture_output=True,
+                              text=True, encoding="utf-8", timeout=600, check=False)
+
+    direct = run(names)
+    listed = run(["--chain-list", "list.txt"])
+    assert direct.returncode == listed.returncode, (direct.stderr, listed.stderr)
+    assert json.loads(direct.stdout) == json.loads(listed.stdout), (
+        "--chain-list produced a different graph than the same paths in argv")
+    assert len(json.loads(listed.stdout)["nodes"]) == len(receipts)
 
 
 def test_a_shallow_chain_still_walks_and_still_reports_the_cycle_rules():

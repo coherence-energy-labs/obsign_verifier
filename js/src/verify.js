@@ -26,6 +26,18 @@ const { integrity } = require('./canonical.js');
 const sigmod = require('./signature.js');
 const replay = require('./replay.js');
 
+/**
+ * The ONE receipt envelope this verifier implements.
+ *
+ * The first decision in verification is "do I know what these bytes are?", and it was
+ * never asked: the ladder dispatched on `kernel` alone, so a document declaring
+ * `spec: "obsign/receipt/v99"` -- a format whose claim boundary, whose params schema
+ * and whose output block nobody here has ever seen -- was interpreted under today's
+ * v1 semantics. Unknown format means "I do not know what these bytes mean", not "I
+ * will interpret them as whatever my current implementation does".
+ */
+const RECEIPT_SPEC_V1 = 'obsign/receipt/v1';
+
 const plain = (v) => {
   // Unwrap the tagged parse tree into ordinary JS values for the interpreter.
   //
@@ -68,6 +80,23 @@ const plain = (v) => {
   return v;
 };
 
+/** A short, SAFE rendering of an attacker-supplied JSON value, for a note.
+ *
+ * `JSON.stringify` is not safe on this parse tree: a JSON integer arrives as a BigInt
+ * inside a `{__n}` wrapper and `JSON.stringify` THROWS on a BigInt -- out of a
+ * function whose whole contract is that a hostile receipt produces a verdict rather
+ * than an exception. */
+function describeValue(v) {
+  if (v === undefined) return '<absent>';
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (v === null) return 'null';
+  if (typeof v === 'boolean') return String(v);
+  if (v && typeof v === 'object' && '__n' in v) return `<number ${String(v.v)}>`;
+  if (Array.isArray(v)) return '<array>';
+  if (v && v.__obj instanceof Map) return '<object>';
+  return `<${typeof v}>`;
+}
+
 /**
  * Run step 3 and return whether it permits a `verified` verdict. ONE place, so the
  * rule cannot be fixed in one branch and left standing in another.
@@ -87,34 +116,108 @@ function signatureGate(receipt, result, notes) {
   return !sig.present || sig.valid;
 }
 
-function verify(receipt) {
+/** The digest of the program this receipt actually carries, or null.
+ *
+ * COMPUTED, never read out of `params.program_sha256`. The stated field is a
+ * convenience a producer can get wrong and a forger can simply write: pinning against
+ * it would let anyone claim the approved program by typing its digest into the file
+ * beside a different program. The `digestOk` rung already refuses a stated digest that
+ * disagrees with the computed one, so on any receipt that could be verified the two
+ * are the same value -- and where they differ, this is the one that means "the program
+ * that ran". (The JavaScript CLI read the STATED field, which is the weaker of the
+ * two; all three implementations now compute it.) */
+function programDigest(receipt) {
+  try {
+    const params = plain(receipt.__obj.get('params'));
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
+    const program = params.program;
+    if (!program || typeof program !== 'object' || Array.isArray(program)) return null;
+    return replay.programSha256(program);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Run the ladder.
+ *
+ * `expectProgram` PINS THE SEMANTIC BOUNDARY, and it lives here rather than in the
+ * CLI. Re-derivation proves the output follows FROM THE PROGRAM; it cannot prove the
+ * program computes what its name claims, and no finite black-box probe can. That was
+ * CLI post-processing in three implementations, which meant every LIBRARY caller got
+ * the weaker question and no field telling them so. `approved_program` is now part of
+ * the result: null when no expectation was supplied, true/false when one was.
+ *
+ * `strictLiveness` turns an `indeterminate` liveness verdict into a refusal. The
+ * default is unchanged and still accepts it.
+ */
+function verify(receipt, expectProgram = null, strictLiveness = false) {
   const notes = [];
-  const result = { integrity: false, reproduced: null, signature: null, verified: false, notes };
+  const result = {
+    integrity: false,
+    reproduced: null,
+    signature: null,
+    verified: false,
+    // "this verifier does not implement this format" -- never "this is forged".
+    unsupported: false,
+    // null means NO EXPECTATION WAS SUPPLIED, a different fact from false.
+    approved_program: null,
+    notes,
+  };
+
+  /** Apply the approved-program pin, whichever rung returned. It runs on EVERY path,
+   *  including the ones that could not re-execute: a receipt whose kernel this
+   *  implementation cannot run is not thereby an approved program. */
+  const finish = (res) => {
+    if (expectProgram === null || expectProgram === undefined) return res;
+    const actual = programDigest(receipt);
+    res.approved_program = actual === expectProgram;
+    if (!res.approved_program) {
+      res.verified = false;
+      notes.push(`program is not the approved one: expected ${String(expectProgram).slice(0, 16)}.., `
+        + `receipt carries ${String(actual).slice(0, 16)}..`);
+    }
+    return res;
+  };
 
   try {
     const [ok, detail] = integrity(receipt);
     result.integrity = ok;
     if (!ok) notes.push(detail);
 
+    // THE FIRST DECISION IS THE FORMAT, AND IT COMES BEFORE KERNEL SELECTION. An
+    // unrecognised `spec` is not re-executed under v1 semantics and is not accused of
+    // anything either: nothing here knows what it claims. The signature gate still
+    // runs, because "who signed this file" is answerable without knowing what the file
+    // means -- but it can only ever attribute, never verify.
+    const receiptSpec = receipt.__obj.get('spec');
+    if (receiptSpec !== RECEIPT_SPEC_V1) {
+      notes.push(`receipt spec ${describeValue(receiptSpec)} is not supported by this `
+        + 'verifier - UNSUPPORTED, not verified');
+      result.unsupported = true;
+      signatureGate(receipt, result, notes);
+      return finish(result);
+    }
+
     const kernel = receipt.__obj.get('kernel');
     if (kernel !== replay.SPEC) {
       notes.push(`kernel ${kernel} cannot be re-executed by this implementation `
         + '(JavaScript re-derives obsign/replay/1 only) - NOT verified by re-derivation');
       signatureGate(receipt, result, notes);
-      return result;
+      return finish(result);
     }
 
     const params = plain(receipt.__obj.get('params'));
     if (params === null || typeof params !== 'object') {
       notes.push('replay receipt carries no params; nothing to re-execute');
       signatureGate(receipt, result, notes);
-      return result;
+      return finish(result);
     }
     const { program, inputs } = params;
     if (program === null || typeof program !== 'object' || !Array.isArray(inputs)) {
       notes.push('replay params must carry {program: object, inputs: [int]}');
       signatureGate(receipt, result, notes);
-      return result;
+      return finish(result);
     }
 
     const stated = params.program_sha256;
@@ -131,7 +234,7 @@ function verify(receipt) {
       if (!(e instanceof replay.Trap)) throw e;
       notes.push(`program refused: ${e.message}`);
       signatureGate(receipt, result, notes);
-      return result;
+      return finish(result);
     }
 
     const declared = plain(receipt.__obj.get('output')) || {};
@@ -152,7 +255,20 @@ function verify(receipt) {
     // a constant hiding beside a decoy that echoes an input; graph.js refuses a link
     // whose source slice is entirely dead.
     result.output_liveness_by_cell = perCell;
-    const liveOk = liveness !== 'dead' && liveness !== 'guarded';
+    // THE DEFAULT ACCEPTS `indeterminate`, AND THE STRICT MODE DOES NOT. The default
+    // must accept it (a verifier that refused an honest receipt for being costly to
+    // probe would be accusing producers of forgery on a timing measurement); an
+    // auditor of a regulated program must be able to switch that off. Strict demands
+    // a positive 'live': nothing weaker, and 'n/a' -- a program declaring no inputs at
+    // all -- is weaker.
+    const liveOk = strictLiveness
+      ? liveness === 'live'
+      : (liveness !== 'dead' && liveness !== 'guarded');
+    if (strictLiveness && liveness !== 'live') {
+      notes.push(`--strict-liveness: input-liveness is '${liveness}' and only 'live' is `
+        + 'accepted in strict mode - REFUSED without a positive demonstration that a '
+        + 'declared input reaches the output');
+    }
     if (liveness === 'dead') {
       notes.push('the output does not depend on ANY declared input: every input was '
         + 'perturbed and the result never changed. This program ignores its inputs, '
@@ -203,10 +319,12 @@ function verify(receipt) {
 
     result.verified = Boolean(result.integrity && result.reproduced && digestOk && lenOk
       && liveOk && sigOk);
-    return result;
+    return finish(result);
   } catch (e) {
     notes.push(`verification error, treated as NOT verified: ${e.name}: ${e.message}`);
-    return result;
+    // The pin still gets an answer: leaving it null would read as "no expectation was
+    // supplied" to a caller that supplied one.
+    try { return finish(result); } catch (e2) { return result; }
   }
 }
 
@@ -375,4 +493,4 @@ function inputLiveness(program, inputs, baseOut, baseSteps) {
 }
 
 
-module.exports = { verify, plain };
+module.exports = { verify, plain, RECEIPT_SPEC_V1 };
