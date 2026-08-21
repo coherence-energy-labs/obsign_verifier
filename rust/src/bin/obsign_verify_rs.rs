@@ -10,10 +10,10 @@
 //! 2^53 would be compared after being rounded, which is the precise failure this
 //! format exists to make impossible. Digits in quotes cross safely.
 
-use obsign_verify::graph::{verify_graph, LinksOk};
+use obsign_verify::graph::{verify_graph, verify_graph_with, LinksOk};
 use obsign_verify::json::{canonical_string, load_receipt, parse_permissive, Value};
 use obsign_verify::replay;
-use obsign_verify::verify::{verify, Verdict};
+use obsign_verify::verify::{verify, verify_with, Verdict};
 use std::process::ExitCode;
 
 fn s(v: &str) -> Value {
@@ -41,6 +41,7 @@ fn verdict_to_json(v: &Verdict) -> Value {
         Some(c) => obj(vec![
             ("present", Value::Bool(c.present)),
             ("valid", Value::Bool(c.valid)),
+            ("unsupported", Value::Bool(c.unsupported)),
             ("identity_bound", Value::Bool(c.identity_bound)),
             ("attributed_signer", opt_str(&c.attributed_signer)),
             ("claimed_signer", opt_str(&c.claimed_signer)),
@@ -58,17 +59,100 @@ fn verdict_to_json(v: &Verdict) -> Value {
             },
         ),
         ("verified", Value::Bool(v.verified)),
-        ("input_liveness", opt_str(&v.input_liveness)),
-        ("input_liveness_by_input", strings(&v.input_liveness_by_input)),
-        ("signature", sig),
+        ("unsupported", Value::Bool(v.unsupported)),
         (
-            "output",
-            match &v.output {
+            "approved_program",
+            match v.approved_program {
                 None => Value::Null,
-                Some(o) => Value::Array(o.iter().map(|x| s(&x.to_string())).collect()),
+                Some(b) => Value::Bool(b),
             },
         ),
+        ("input_liveness", opt_str(&v.input_liveness)),
+        ("input_liveness_by_input", strings(&v.input_liveness_by_input)),
+        ("output_liveness_by_cell", strings(&v.output_liveness_by_cell)),
+        ("signature", sig),
         ("notes", strings(&v.notes)),
+    ])
+}
+
+/// Re-run the receipt's own program on its own inputs, INDEPENDENTLY of the verdict.
+///
+/// This used to report `Verdict.output`, which is only populated by the replay rung --
+/// so on any receipt the ladder declines to re-execute (an unsupported `spec`, an
+/// unknown kernel) Rust reported `null` while the Python and JavaScript legs, which
+/// have always run the program separately, reported the numbers. That is a difference
+/// between three HARNESSES, not between three verifiers, and a differential that
+/// cannot tell those apart reports the wrong finding. All three legs now answer the
+/// same question: "what does this program compute on these inputs", asked of the
+/// receipt and not of the verdict. `null` whenever that cannot be done -- which is a
+/// fact all three must agree on too.
+fn outputs_of(receipt: &Value) -> Value {
+    let params = match receipt.get("params") {
+        Some(p) => p,
+        None => return Value::Null,
+    };
+    let prog = match params.get("program") {
+        Some(p) => p,
+        None => return Value::Null,
+    };
+    let inputs = match params.get("inputs").map(replay::read_inputs) {
+        Some(Ok(v)) => v,
+        _ => return Value::Null,
+    };
+    match replay::run(prog, &inputs) {
+        Ok(o) => Value::Array(o.iter().map(|x| s(&x.to_string())).collect()),
+        Err(_) => Value::Null,
+    }
+}
+
+/// How ONE graph node is serialised. Extracted so the `--harness graph` mode and the
+/// CLI's `--json` cannot drift about what `links_ok` is called -- `incomplete` is a
+/// STRING beside two booleans, and two spellings of that in one binary is exactly the
+/// kind of divergence this crate exists to prevent.
+fn graph_nodes_json(g: &obsign_verify::graph::GraphVerdict) -> Value {
+    Value::Object(
+        g.nodes
+            .iter()
+            .map(|(d, n)| {
+                (
+                    d.encode_utf16().collect::<Vec<u16>>(),
+                    obj(vec![
+                        ("verified", Value::Bool(n.verified)),
+                        (
+                            "links_ok",
+                            match n.links_ok {
+                                LinksOk::NotApplicable => Value::Null,
+                                LinksOk::Ok => Value::Bool(true),
+                                LinksOk::Bad => Value::Bool(false),
+                                LinksOk::Incomplete => s("incomplete"),
+                            },
+                        ),
+                        (
+                            "envelopes",
+                            Value::Int(obsign_verify::json::Int::from_i64(n.envelopes as i64)),
+                        ),
+                        ("notes", strings(&n.notes)),
+                    ]),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The `--chain --json` document. Mirrors `src/obsign_verify/cli.py::_chain`, which
+/// prints `{**graph_verdict, "unreadable": [...]}`: a caller that parses one CLI's
+/// chain output must be able to parse another's.
+fn graph_to_json(g: &obsign_verify::graph::GraphVerdict) -> Value {
+    let mut roots = g.roots.clone();
+    roots.sort();
+    obj(vec![
+        ("graph_verified", Value::Bool(g.graph_verified)),
+        ("complete", Value::Bool(g.complete)),
+        ("missing", strings(&g.missing)),
+        ("roots", strings(&roots)),
+        ("order", strings(&g.order)),
+        ("nodes", graph_nodes_json(g)),
+        ("notes", strings(&g.notes)),
     ])
 }
 
@@ -118,7 +202,13 @@ fn harness(mode: &str, path: &str) {
                 _ => Value::Null,
             },
             "verify" => match payload.as_str().map(|t| load_receipt(&t)) {
-                Some(Ok(v)) => obj(vec![("loaded", Value::Bool(true)), ("verdict", verdict_to_json(&verify(&v)))]),
+                Some(Ok(v)) => {
+                    let mut verdict = verdict_to_json(&verify(&v));
+                    if let Value::Object(fields) = &mut verdict {
+                        fields.push(("output".encode_utf16().collect(), outputs_of(&v)));
+                    }
+                    obj(vec![("loaded", Value::Bool(true)), ("verdict", verdict)])
+                }
                 _ => obj(vec![("loaded", Value::Bool(false)), ("verdict", Value::Null)]),
             },
             "graph" => {
@@ -211,14 +301,38 @@ fn harness(mode: &str, path: &str) {
     ));
 }
 
+fn usage() {
+    eprintln!(
+        "usage: obsign-verify-rs [--chain] [--expect-program HEX] [--strict-liveness]\n\
+        \x20                       [--chain-list FILE] [--json] RECEIPT.json...\n\
+        \x20      obsign-verify-rs --harness MODE JOBFILE\n\
+        \n\
+        \x20 --chain            verify the receipts as a GRAPH (docs/GRAPHS.md): every\n\
+        \x20                    node re-derived, every params.links slice compared\n\
+        \x20                    value-for-value against a fresh re-derivation of the\n\
+        \x20                    child it names. Exit 0 only if the whole chain holds.\n\
+        \x20 --expect-program   require the replay program to be the one your validator\n\
+        \x20                    approved (its program_sha256).\n\
+        \x20 --strict-liveness  refuse a receipt whose input-liveness probe ended\n\
+        \x20                    'indeterminate'. Reaches chain nodes and link slices too.\n\
+        \x20 --chain-list FILE  read receipt paths from FILE, one per line.\n\
+        \x20 --json             machine-readable output.\n\
+        \x20 --help             this text."
+    );
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!(
-            "usage: obsign-verify-rs [--chain] [--expect-program HEX] RECEIPT.json...\n       \
-             obsign-verify-rs --harness MODE JOBFILE"
-        );
+        usage();
         return ExitCode::from(2);
+    }
+    // `--help` PRINTED "cannot read --help" AND EXITED 1, because the catch-all below
+    // treated it as a filename. The other two CLIs answer it and exit 0; a tool whose
+    // help is an error is a tool a first-time user concludes is broken.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        usage();
+        return ExitCode::SUCCESS;
     }
     if args[0] == "--harness" {
         harness(&args[1], &args[2]);
@@ -226,15 +340,96 @@ fn main() -> ExitCode {
     }
 
     let mut chain = false;
+    let mut as_json = false;
+    let mut strict_liveness = false;
     let mut expect_program: Option<String> = None;
     let mut files: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--chain" => chain = true,
+            // MACHINE-READABLE OUTPUT, WHICH THIS CLI SIMPLY DID NOT HAVE. The other
+            // two both take --json; here it fell through the catch-all, was read as a
+            // FILENAME, and printed "[REFUSED] --json  cannot read" beside a verdict
+            // for the real receipt. Any script that pipes this binary to a parser got
+            // human prose plus a fabricated refusal line.
+            "--json" => as_json = true,
+            "--strict-liveness" => strict_liveness = true,
             "--expect-program" => {
                 i += 1;
-                expect_program = args.get(i).cloned();
+                // A FLAG WITH NO VALUE MUST NOT SILENTLY MEAN "NO PIN". This was
+                // `args.get(i).cloned()`, so `--expect-program` at the end of argv
+                // set None and the run printed VERIFIED with the pin absent -- the
+                // one flag whose whole purpose is to turn "did this re-derive?"
+                // into "did this re-derive from the program my validator approved?"
+                // A wrapper or CI matrix that builds argv programmatically could
+                // drop it with no diagnostic. The reference CLI (argparse) has
+                // always refused this; now so does this one.
+                match args.get(i) {
+                    Some(v) if !v.starts_with("--") => expect_program = Some(v.clone()),
+                    _ => {
+                        eprintln!(
+                            "--expect-program needs a program digest; none was given.                              Refusing to run WITHOUT the pin rather than silently                              verifying without it."
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            }
+            // THE SAME ARGUMENT LIST, DELIVERED THROUGH A CHANNEL WITH NO LIMIT. A
+            // chain of thousands of nodes cannot be named in argv on Windows (8191
+            // characters), and a refusal to RUN is not a verdict -- while the
+            // deep-chain property is exactly the one that needs thousands of nodes.
+            "--chain-list" => {
+                i += 1;
+                let path = match args.get(i) {
+                    Some(p) => p.clone(),
+                    None => {
+                        eprintln!("--chain-list needs a file");
+                        return ExitCode::from(2);
+                    }
+                };
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        for line in text.lines() {
+                            let t = line.trim();
+                            if !t.is_empty() && !t.starts_with('#') {
+                                files.push(t.to_string());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("cannot read --chain-list {path}: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            // AN UNKNOWN SWITCH IS AN ERROR, NOT A FILENAME.
+            //
+            // The catch-all pushed EVERYTHING here, so `--strict-livenes` (one letter
+            // short) became a path, failed to open, and printed
+            //
+            //     [REFUSED] --strict-livenes
+            //         cannot read: The system cannot find the file specified.
+            //
+            // with exit 1. It fails closed, which is the only reason this is a defect
+            // and not a breach -- but the diagnosis is wrong in the direction that
+            // matters: the strictness the operator asked for WAS NEVER APPLIED, and
+            // the run reports "a file failed". In a multi-receipt run that reads as
+            // one bad receipt among many. It is the same class as the
+            // `--expect-program` fail-open directly above: a security switch that is
+            // accepted and ignored. The reference CLI (argparse) has always exited 2
+            // with "unrecognized arguments"; now so does this one.
+            //
+            // A single "-" is left alone: it is a conventional stdin sentinel, not a
+            // switch, and refusing it here would be a new incompatibility.
+            f if f.starts_with('-') && f != "-" => {
+                eprintln!(
+                    "unrecognized argument {f:?}. Refusing to run rather than treat a \
+                     switch as a filename -- a mistyped flag must not silently mean \
+                     the flag was never given."
+                );
+                usage();
+                return ExitCode::from(2);
             }
             f => files.push(f.to_string()),
         }
@@ -266,7 +461,11 @@ fn main() -> ExitCode {
 
     if chain {
         let receipts: Vec<Value> = loaded.iter().map(|(_, v)| v.clone()).collect();
-        let g = verify_graph(&receipts);
+        let g = verify_graph_with(&receipts, strict_liveness);
+        if as_json {
+            print_json(&graph_to_json(&g));
+            return if g.graph_verified && !failed { ExitCode::SUCCESS } else { ExitCode::from(1) };
+        }
         for (d, n) in &g.nodes {
             println!(
                 "  {} {}  verified={} links_ok={}",
@@ -300,29 +499,42 @@ fn main() -> ExitCode {
         return if g.graph_verified && !failed { ExitCode::SUCCESS } else { ExitCode::from(1) };
     }
 
+    if as_json {
+        let mut report: Vec<Value> = Vec::new();
+        for (f, v) in &loaded {
+            let res = verify_with(v, expect_program.as_deref(), strict_liveness);
+            if !res.verified {
+                failed = true;
+            }
+            let mut verdict = verdict_to_json(&res);
+            if let Value::Object(fields) = &mut verdict {
+                fields.insert(0, ("file".encode_utf16().collect(), s(f)));
+            }
+            report.push(verdict);
+        }
+        print_json(&Value::Array(report));
+        return if failed { ExitCode::from(1) } else { ExitCode::SUCCESS };
+    }
+
     let mut verified = 0usize;
     for (f, v) in &loaded {
-        let mut res = verify(v);
-        // Re-derivation proves the output follows FROM THE PROGRAM. It does not prove
-        // the program computes what its name claims. Pinning the digest a validator
-        // approved after READING it is what answers that question.
-        if let Some(want) = &expect_program {
-            let got = v
-                .get("params")
-                .and_then(|p| p.get("program"))
-                .and_then(replay::program_sha256);
-            if got.as_deref() != Some(want.as_str()) {
-                res.verified = false;
-                res.notes.push(format!(
-                    "program is not the approved one: expected {want}, receipt carries {}",
-                    got.as_deref().unwrap_or("<no program>")
-                ));
-            }
-        }
+        // PROGRAM PINNING AND STRICT LIVENESS ARE LIBRARY ARGUMENTS, not CLI
+        // post-processing. Living in three CLIs meant every caller that links the crate
+        // instead of shelling out silently got the weaker question, with no field in
+        // the verdict to say so.
+        let res = verify_with(v, expect_program.as_deref(), strict_liveness);
         if res.verified {
             verified += 1;
         }
-        println!("  [{}] {f}", if res.verified { "VERIFIED" } else { "REFUSED " });
+        // A HEADLINE THAT HIDES AN UNPROVEN RUNG IS THE DEFECT, NOT THE VERDICT.
+        let tag = if res.verified && res.input_liveness.as_deref() == Some("indeterminate") {
+            "  (inputs unproven)"
+        } else if res.unsupported {
+            "  (unsupported format - NOT verified)"
+        } else {
+            ""
+        };
+        println!("  [{}] {f}{tag}", if res.verified { "VERIFIED" } else { "REFUSED " });
         println!("      integrity   {}", if res.integrity { "ok" } else { "FAILED" });
         println!(
             "      re-derived  {}",
@@ -332,7 +544,37 @@ fn main() -> ExitCode {
                 None => "not attempted",
             }
         );
+        match res.input_liveness.as_deref() {
+            None | Some("n/a") => {}
+            Some(live) => println!(
+                "      inputs      {}",
+                match live {
+                    "live" => "ok - the output depends on the declared inputs",
+                    "dead" => "FAIL - the output ignores every declared input",
+                    "guarded" => "FAIL - the program trapped on every perturbation, so \
+                                  nothing was shown to reach the output",
+                    "indeterminate" =>
+                        "UNPROVEN (probe budget reached) - semantic validity not established",
+                    other => other,
+                }
+            ),
+        }
+        if let Some(approved) = res.approved_program {
+            println!(
+                "      program     {}",
+                if approved {
+                    "ok - matches the approved digest"
+                } else {
+                    "FAIL - not the approved program"
+                }
+            );
+        }
         match &res.signature {
+            Some(c) if c.present && c.unsupported => {
+                // "I did not read it" is a THIRD answer; printing FAILED would claim
+                // the signature was checked and found wanting.
+                println!("      signature   UNSUPPORTED spec - nothing was checked");
+            }
             Some(c) if c.present => println!(
                 "      signature   {}{}",
                 if c.valid { "ok" } else { "FAILED" },

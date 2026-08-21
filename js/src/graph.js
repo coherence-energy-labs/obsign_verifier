@@ -73,7 +73,14 @@ const placeholder = (key, note) => ({
 
 /** Verify RECEIPTS (boxed, as loadReceipt returns them) individually and
  * transitively. Never throws on hostile input. */
-function verifyGraph(receipts) {
+/**
+ * Verify RECEIPTS individually and transitively.
+ *
+ * `strictLiveness` is the same switch `verify` takes, and it reaches BOTH rungs of the
+ * chain: each node's standalone ladder, and the rule below that asks whether the slice
+ * a link carries was ever shown to move.
+ */
+function verifyGraph(receipts, strictLiveness = false) {
   const graphNotes = [];
   const nodes = new Map();       // digest -> {receipt, receiptPlain, envelopes, verified, ...}
   const canon = new Map();       // digest -> canonical claim string (collision check)
@@ -134,7 +141,7 @@ function verifyGraph(receipts) {
     node.verified = true;
     let first = true;
     for (const key of [...node.envelopes.keys()].sort()) {
-      const res = verify(node.envelopes.get(key));
+      const res = verify(node.envelopes.get(key), null, strictLiveness);
       if (first) { node.standalone = res; first = false; }
       if (res.verified !== true) {
         node.verified = false;
@@ -232,12 +239,41 @@ function verifyGraph(receipts) {
       // refuses a node whose whole output ignores every declared input; an output
       // window is a VECTOR, so `output 424242, a + b;` passes that and then links only
       // cell 0, carrying a hardcoded constant down a chain that prints CHAIN VERIFIED.
-      // Cells the child's probe could not decide are 'indeterminate' and never refuse.
+      //
+      // THE SLICE VERDICT IS THREE-VALUED, BECAUSE THE CELL VERDICT IS.
+      //
+      // This read `every(st === 'dead')`, and a cell the probe ran out of budget on is
+      // 'indeterminate', not 'dead' -- so the rule was switchable off by the party it
+      // constrains. The same child program with ONE constant changed (a spin loop long
+      // enough to cut the cell sweep short) moved its laundered cell from 'dead' to
+      // 'indeterminate', and a chain carrying a literal went from REFUSED to
+      // graph_verified. Cost decided it, not evidence.
+      //
+      //   any cell live -> the link binds something that demonstrably moved
+      //   else any indeterminate (or the slice is not covered) -> INCOMPLETE
+      //   else all dead -> FORGED
+      //
+      // 'incomplete' is what this graph already says for "a child was not supplied":
+      // out of green without calling the producer a forger, which is right for an
+      // honest receipt too expensive to sweep. Under strict liveness there is no such
+      // benefit of the doubt.
       const cells = (nodes.get(childDigest).standalone || {}).output_liveness_by_cell || [];
       const sliceStates = cells.slice(s, s + L);
-      if (sliceStates.length && sliceStates.every((st) => st === 'dead')) {
+      const covered = sliceStates.length === L;
+      if (covered && sliceStates.length && sliceStates.every((st) => st === 'dead')) {
         node.linksOk = false;
         node.notes.push(`link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. never moved under ANY perturbation of that receipt's inputs: the values this link carries are constants, so the chain proves nothing about them however well every node re-derives`);
+      } else if (!covered || !sliceStates.some((st) => st === 'live')) {
+        const why = covered
+          ? 'the probe hit its budget before deciding these cells'
+          : "the probe's cell verdict does not cover this slice";
+        if (strictLiveness) {
+          node.linksOk = false;
+          node.notes.push(`--strict-liveness: link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. was never shown to move under ANY perturbation (${why}) - REFUSED without a positive demonstration that the values this link carries are derived`);
+        } else {
+          if (node.linksOk === true) node.linksOk = 'incomplete';
+          node.notes.push(`link source output[${s}..${s + L}) of ${childDigest.slice(0, 16)}.. was not shown to depend on that receipt's inputs (${why}), so the chain does not establish that these values were computed rather than hardcoded -- incomplete, not forged`);
+        }
       }
     }
   }

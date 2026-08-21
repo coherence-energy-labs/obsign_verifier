@@ -81,9 +81,18 @@ def _placeholder(key: str, note: str) -> dict:
             "envelopes": {key.encode("utf-8"): None}}
 
 
-def verify_graph(receipts: list) -> dict:
+def verify_graph(receipts: list, strict_liveness: bool = False) -> dict:
     """Verify RECEIPTS individually and transitively. Never raises on hostile input --
-    an exception is not a refusal, on a graph exactly as on a single receipt."""
+    an exception is not a refusal, on a graph exactly as on a single receipt.
+
+    `strict_liveness` is the same switch `verify` takes, and it reaches BOTH rungs of
+    the chain: each node's standalone ladder, and the rule below that asks whether the
+    slice a link carries was ever shown to move. It used not to reach either --
+    cli.py called `verify_graph(receipts)` with no argument, so `--chain
+    --strict-liveness` parsed the flag, printed nothing different and accepted exactly
+    what `--chain` accepted. A switch an auditor sets and a verifier ignores is worse
+    than one that does not exist: it reports a strictness that was never applied.
+    """
     graph_notes: list[str] = []
     nodes: dict[str, dict] = {}          # digest -> {"receipt", "envelopes", "verified", ...}
     canon_bytes: dict[str, bytes] = {}   # digest -> canonical claim bytes (collision check)
@@ -139,7 +148,8 @@ def verify_graph(receipts: list) -> dict:
         # "every node verifies standalone", and a receipt deduped away never ran the
         # ladder at all -- so the node's verdict is the conjunction over the documents
         # actually supplied, and one hostile copy cannot hide behind an honest one.
-        results = [verify(node["envelopes"][k]) for k in sorted(node["envelopes"])]
+        results = [verify(node["envelopes"][k], strict_liveness=strict_liveness)
+                   for k in sorted(node["envelopes"])]
         node["verified"] = all(bool(res.get("verified")) for res in results)
         node["standalone"] = results[0]
         for res in results:
@@ -245,17 +255,57 @@ def verify_graph(receipts: list) -> dict:
             # every input is live, the node verifies, and a hardcoded constant travels
             # the chain under "CHAIN VERIFIED - every node re-derived, every link
             # binds". The same rule, applied to the slice the link actually carries,
-            # closes it. Cells the child's probe could not decide are "indeterminate"
-            # and never refuse, exactly as an indeterminate node verdict does not.
+            # closes it.
+            #
+            # THE SLICE VERDICT IS THREE-VALUED, BECAUSE THE CELL VERDICT IS.
+            #
+            # This read `all(st == "dead")`, and a cell the probe ran out of budget on
+            # is "indeterminate", not "dead". So the rule was switchable off by the
+            # party it constrains: the same child program with ONE constant changed --
+            # a spin loop long enough to cut the cell sweep short -- moved its
+            # laundered cell from `dead` to `indeterminate`, and a chain carrying the
+            # literal 424242 went from REFUSED to `graph_verified: true`. Cost, not
+            # evidence, decided it.
+            #
+            #   any cell live  -> the link binds something that demonstrably moved
+            #   else any indeterminate (or the probe did not cover the slice)
+            #                  -> INCOMPLETE: not forged, not established either
+            #   else all dead  -> FORGED: the values are constants
+            #
+            # `incomplete` is the verdict this graph already uses for "a child was not
+            # supplied": it keeps the chain out of green without calling the producer
+            # a forger, which is exactly right for an honest receipt too expensive to
+            # sweep. Under --strict-liveness there is no such benefit of the doubt.
             cells = (child.get("standalone") or {}).get("output_liveness_by_cell") or []
             slice_states = cells[s:s + ln_len]
-            if slice_states and all(st == "dead" for st in slice_states):
+            covered = len(slice_states) == ln_len
+            if covered and slice_states and all(st == "dead" for st in slice_states):
                 node["links_ok"] = False
                 node["notes"].append(
                     f"link source output[{s}..{s + ln_len}) of {child_digest[:16]}.. "
                     f"never moved under ANY perturbation of that receipt's inputs: the "
                     f"values this link carries are constants, so the chain proves "
                     f"nothing about them however well every node re-derives")
+            elif not any(st == "live" for st in slice_states) or not covered:
+                why = ("the probe's cell verdict does not cover this slice"
+                       if not covered else
+                       "the probe hit its budget before deciding these cells")
+                if strict_liveness:
+                    node["links_ok"] = False
+                    node["notes"].append(
+                        f"--strict-liveness: link source output[{s}..{s + ln_len}) of "
+                        f"{child_digest[:16]}.. was never shown to move under ANY "
+                        f"perturbation ({why}) - REFUSED without a positive "
+                        f"demonstration that the values this link carries are derived")
+                else:
+                    if node["links_ok"] is True:
+                        node["links_ok"] = "incomplete"
+                    node["notes"].append(
+                        f"link source output[{s}..{s + ln_len}) of "
+                        f"{child_digest[:16]}.. was not shown to depend on that "
+                        f"receipt's inputs ({why}), so the chain does not establish "
+                        f"that these values were computed rather than hardcoded -- "
+                        f"incomplete, not forged")
 
     def _named_child(ln) -> str | None:
         """The digest a link names, or None if it does not name one.

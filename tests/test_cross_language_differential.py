@@ -14,11 +14,14 @@ the same hands. Agreement here is evidence that the spec is unambiguous ENOUGH t
 re-read consistently by one person; it is not the independent third-party review
 docs/AUDIT_SCOPE.md asks for, and it must never be cited as one.
 
-KNOWN DIVERGENCES ARE FROZEN, NOT SKIPPED. Every disagreement this harness found is
-recorded in `KNOWN_DIVERGENCES` with the side docs/ supports. Each entry is asserted to
-STILL diverge, so the day one is fixed this test fails and says the entry is stale --
-the freeze runs in both directions, which is the only way a known-issue list stays
-honest.
+KNOWN DIVERGENCES ARE FROZEN, NOT SKIPPED -- AND THE TABLE IS NOW EMPTY. Every
+disagreement this harness found used to be recorded in `KNOWN_DIVERGENCES` with the
+side docs/ supports, and each entry is asserted to STILL diverge, so the day one is
+fixed this test fails and says the entry is stale. The freeze runs in both directions,
+which is the only way a known-issue list stays honest -- but a known-issue list is a
+place a defect SITS, not a place it LIVES, and the two entries and the one softened
+column class that were here are closed rather than documented. See the note above
+`KNOWN_DIVERGENCES` for what they were.
 """
 from __future__ import annotations
 
@@ -54,8 +57,13 @@ def _write_job(cases) -> Path:
 
 
 def _run(argv, job: Path) -> dict:
+    # `encoding="utf-8"`, explicitly. `text=True` alone decodes with the LOCALE
+    # codec, which on a Windows runner is cp1252: a corpus that deliberately carries
+    # astral characters and escaped surrogates then dies in the reader thread with
+    # `UnicodeDecodeError: 'charmap' codec can't decode byte 0x90`, before any
+    # comparison happens. The three legs emit UTF-8 JSON; read it as UTF-8.
     proc = subprocess.run([*argv, str(job)], capture_output=True, text=True,
-                          timeout=1800, check=False)
+                          encoding="utf-8", timeout=1800, check=False)
     if proc.returncode != 0:
         raise AssertionError(f"{argv[0]} failed: {proc.stdout[-4000:]}\n{proc.stderr[-4000:]}")
     return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -80,12 +88,21 @@ def rust_leg(mode: str, cases) -> dict:
 _BINARY: list[Path] = []
 
 
+#: The built binary's name. `.exe` on Windows, and not naming it is not a cosmetic
+#: slip: `exe.exists()` was False after a PERFECTLY SUCCESSFUL build, so this raised
+#: "cargo build failed" with the compiler's own green output pasted underneath it, and
+#: three other test files silently reported "rust binary is not built" -- a skip that
+#: reads like a pass in every summary line -- on the platform the CI matrix declares.
+RUST_BIN = "obsign-verify-rs" + (".exe" if sys.platform == "win32" else "")
+
+
 def _rust_binary() -> Path:
     if _BINARY:
         return _BINARY[0]
-    exe = RUST / "target" / "release" / "obsign-verify-rs"
+    exe = RUST / "target" / "release" / RUST_BIN
     build = subprocess.run(["cargo", "build", "--release", "--offline"], cwd=RUST,
-                           capture_output=True, text=True, timeout=900, check=False)
+                           capture_output=True, text=True, encoding="utf-8",
+                           timeout=900, check=False)
     if not exe.exists():
         raise AssertionError(f"cargo build failed:\n{build.stdout}\n{build.stderr}")
     _BINARY.append(exe)
@@ -132,10 +149,14 @@ def python_leg(mode: str, cases) -> dict:
                 "integrity": v["integrity"],
                 "reproduced": v["reproduced"],
                 "verified": v["verified"],
+                "unsupported": v.get("unsupported", False),
+                "approved_program": v.get("approved_program"),
                 "input_liveness": v.get("input_liveness"),
                 "input_liveness_by_input": v.get("input_liveness_by_input", []),
+                "output_liveness_by_cell": v.get("output_liveness_by_cell", []),
                 "signature": None if s is None else {
                     "present": s["present"], "valid": s["valid"],
+                    "unsupported": s.get("unsupported", False),
                     "identity_bound": s["identity_bound"],
                     "attributed_signer": s["attributed_signer"],
                     "claimed_signer": s["claimed_signer"],
@@ -175,37 +196,32 @@ def python_leg(mode: str, cases) -> dict:
 
 # ------------------------------------------------------------------ known divergences
 #
-# Each entry is a measured disagreement between the shipped implementations, with the
-# reading docs/ supports. They are asserted to STILL diverge: when one is fixed, this
-# test fails and tells you the entry is stale. See rust/README.md for the full write-up.
+# THIS TABLE IS EMPTY, AND THAT IS THE POINT. It is not a place to record disagreements;
+# it is a place a disagreement may sit while it is being fixed, and every entry is
+# asserted to STILL diverge -- so the day one is repaired this test fails and says the
+# entry is stale. An empty table means every case in the corpus gets ONE answer from
+# three implementations, which is the product.
+#
+# WHAT USED TO BE HERE, so that nobody re-adds it:
+#
+#   ("verify", "sig:sig-member-is-number") and ("verify", "sig:sig-member-is-true")
+#   -- `js/src/signature.js` read `str(sig,'sig') || str(sig,'signature')`, so a `sig`
+#   of the wrong TYPE fell through to the alternate spelling. `{"sig": 5, "signature":
+#   "<valid 128-hex>"}` therefore VERIFIED in JavaScript and attributed the signer,
+#   while Python and Rust called the block malformed and refused. An executed witness,
+#   in a signature envelope, on a field a forger controls: the synonym is deleted in
+#   all three (RULE SIG-MEMBER), so both entries are gone rather than documented.
+#
+#   SOFTENED_VERIFY_COLUMNS = (3, 4) -- a divergence too broad to freeze case by case,
+#   so it was frozen as a CLASS: `rust/src/verify.rs` still carried the pre-fix
+#   liveness probe (seven fixed absolute perturbations capped at 1,000,000, and a
+#   budget denominated in VM steps) and disagreed with the other two on 37 of the 364
+#   replay receipts. Blanking two columns of a projection is a dark gate wearing a
+#   comment: whatever else those columns might have caught was equally invisible. The
+#   probe is ported value-for-value now, the columns are compared like every other one,
+#   and there is no softening mechanism left in `_compare` to reach for.
 
-KNOWN_DIVERGENCES: dict[tuple[str, str], str] = {
-    # --- what LOADS -------------------------------------------------------------
-    ("verify", "sig:sig-member-is-number"):
-        "`sig` of the wrong TYPE falls through to the `signature` member in JavaScript "
-        "and is a malformed block in Python and Rust.",
-    ("verify", "sig:sig-member-is-true"):
-        "As above, with a boolean.",
-}
-
-#: A divergence too broad to freeze case by case, so it is frozen as a CLASS.
-#:
-#: `rust/src/verify.rs` still carries the pre-fix input-liveness probe: seven fixed
-#: ABSOLUTE perturbations capped at 1,000,000, and a budget denominated in VM steps.
-#: The Python reference and the JavaScript port now perturb at the input's own SCALE
-#: (a figure held in cents and reported in hundreds of millions moved under nothing
-#: the old ladder tried, so honest receipts were refused as "a constant dressed as a
-#: computation") and charge each probe what a run ACTUALLY costs (the step budget
-#: bought four million machine instantiations from a program that retires one step
-#: per run). The two liveness EVIDENCE columns therefore disagree wherever the old
-#: ladder was too coarse -- 37 of the 364 replay receipts in this corpus.
-#:
-#: `verified` is deliberately NOT softened, and neither is anything else a reader
-#: acts on: on this corpus the liveness change moves no verdict, and if it ever did,
-#: this test would still fail. The entry is frozen in BOTH directions like every
-#: other one -- `_compare` asserts the class is STILL divergent, so the day rust/
-#: carries the same probe this file fails and says the exclusion is stale.
-SOFTENED_VERIFY_COLUMNS = (3, 4)      # input_liveness, input_liveness_by_input
+KNOWN_DIVERGENCES: dict[tuple[str, str], str] = {}
 
 
 # Receipts whose kernel the JavaScript and Rust implementations deliberately do not
@@ -230,27 +246,25 @@ def _skip_unless_all_three():
     assert _HAS_CARGO, "OBSIGN_REQUIRE=rust was set but cargo is not installed"
 
 
-def _compare(mode: str, cases, project, *, known=KNOWN_DIVERGENCES, soft=()):
+def _compare(mode: str, cases, project, *, known=KNOWN_DIVERGENCES):
     """Run one corpus through all three legs and require identical projections.
 
     `project` reduces a leg's raw answer to the part that carries MEANING, so a
     disagreement is reported about a verdict rather than about prose.
 
-    `soft` names projection COLUMNS whose disagreement is a frozen class rather than a
-    finding (see SOFTENED_VERIFY_COLUMNS). A case that agrees once those columns are
-    blanked is not reported -- and the class must still be divergent SOMEWHERE, or the
-    exclusion is stale and this fails, exactly as a stale per-case entry does.
+    THERE IS NO SOFTENING PARAMETER ANY MORE. `soft=` blanked named projection columns
+    for the whole corpus so a frozen CLASS of disagreement could stay green; whatever
+    else those columns might have caught was blanked with it, and a gate that cannot
+    fail is not a gate. Every column is compared on every case; the only tolerance left
+    is the per-case `known` table, which is empty and which is asserted in BOTH
+    directions.
     """
     py = python_leg(mode, cases)
     js = js_leg(mode, cases)
     rs = rust_leg(mode, cases)
 
-    def blank(t):
-        return tuple("<softened>" if i in soft else v for i, v in enumerate(t))
-
     disagreements = []
     stale = []
-    softened_any = False
     for name, _ in cases:
         p, j, r = project(py[name]), project(js[name]), project(rs[name])
         agreed = (p == j == r)
@@ -258,15 +272,8 @@ def _compare(mode: str, cases, project, *, known=KNOWN_DIVERGENCES, soft=()):
             if agreed:
                 stale.append(f"{mode}:{name} -- recorded as diverging, now agrees ({p!r})")
             continue
-        if not agreed and soft and blank(p) == blank(j) == blank(r):
-            softened_any = True
-            continue
         if not agreed:
             disagreements.append(f"{mode}:{name}\n    python={p!r}\n    javascript={j!r}\n    rust={r!r}")
-
-    if soft and not softened_any:
-        stale.append(f"{mode}: columns {soft} are softened but now agree on every "
-                     f"case -- remove SOFTENED_VERIFY_COLUMNS and the note above it")
 
     assert not disagreements, (
         f"{len(disagreements)} case(s) DIVERGE across implementations. Every one is a "
@@ -276,6 +283,11 @@ def _compare(mode: str, cases, project, *, known=KNOWN_DIVERGENCES, soft=()):
     assert not stale, (
         "KNOWN_DIVERGENCES is stale -- these now agree, so the entry (and the "
         "corresponding note in rust/README.md) should be removed:\n" + "\n".join(stale))
+    # The reference leg's projections, so a caller can assert what the corpus actually
+    # EXERCISED. Three implementations that all refuse everything agree perfectly, and
+    # a corpus that lost the cases carrying a column would pass this function in
+    # silence -- which is the same dark gate the softened columns were.
+    return {name: project(py[name]) for name, _ in cases}
 
 
 # ----------------------------------------------------------------------------- tests
@@ -344,19 +356,76 @@ def test_the_three_ladders_reach_the_same_verdict():
         return (
             d["verified"],
             d["integrity"],
-            # A three-valued `reproduced` is spelled differently in the reference
-            # (False for "not attempted") than in the two ports (null). What a reader
-            # acts on is whether re-derivation SUCCEEDED, and that is unambiguous.
-            d["reproduced"] is True,
+            # COMPARED AS THE THREE-VALUED FIELD IT IS, not as `is True`.
+            #
+            # This projected to a bool with the note that the reference spelled "not
+            # attempted" as False and the two ports as null, and that a reader only
+            # acts on whether re-derivation SUCCEEDED. Both halves were wrong. The
+            # spelling difference was a REAL divergence -- `js/src/verify.js` and
+            # `rust/src/verify.rs` both document `reproduced: null` and the reference
+            # contradicted its own ports on the same bytes -- and a reader does act on
+            # the difference: the CLIs print "not attempted" for null and "FAIL" for
+            # false, which is an accusation. The reference now initialises to None,
+            # all three agree, and the softening that hid it is gone. A gate with a
+            # projection that cannot fail is not a gate.
+            d["reproduced"],
             d["input_liveness"],
             tuple(d["input_liveness_by_input"] or ()),
-            s.get("present"), s.get("valid"), s.get("identity_bound"),
+            # Compared like every other column: `graph.py` refuses a chain link whose
+            # whole source slice is dead, so a per-cell disagreement is a chain that
+            # verifies in one implementation and is refused in another.
+            tuple(d.get("output_liveness_by_cell") or ()),
+            # "I do not implement this format" is a THIRD answer, and three
+            # implementations that spell it three ways have not agreed about anything.
+            d.get("unsupported"),
+            s.get("present"), s.get("valid"), s.get("unsupported"),
+            s.get("identity_bound"),
             s.get("attributed_signer"), tuple(s.get("bound_metadata") or ()),
             tuple(s.get("unbound_metadata") or ()),
             tuple(d["output"]) if d["output"] is not None else None,
         )
 
-    _compare("verify", replay_only, project, soft=SOFTENED_VERIFY_COLUMNS)
+    got = _compare("verify", replay_only, project)
+
+    # WHAT THE CORPUS ACTUALLY EXERCISED. Agreement is cheap when everything is
+    # refused -- three implementations that all crash agree perfectly -- and a column
+    # nothing in the corpus ever sets is a column no comparison can test. The two
+    # protocol fields added for the audit findings are named explicitly, so deleting
+    # the vectors that carry them fails here instead of quietly halving the check.
+    # A case that did not LOAD projects to the 1-tuple ("not-loaded",), so columns are
+    # read by a guard rather than by index: an IndexError here would be this census
+    # failing, which reads exactly like the corpus failing.
+    def col(p, i, want):
+        return len(p) > i and p[i] == want
+
+    verified = sum(1 for p in got.values() if col(p, 0, True))
+    unsupported_receipts = sum(1 for p in got.values() if col(p, 6, True))
+    unsupported_sigs = sum(1 for p in got.values() if col(p, 9, True))
+    live = sum(1 for p in got.values() if col(p, 3, "live"))
+    assert len(replay_only) > 300, f"only {len(replay_only)} replay receipts in the corpus"
+    assert verified > 80, (
+        f"only {verified} receipts VERIFY in all three -- agreement on refusal is much "
+        f"cheaper to achieve than agreement on a pass")
+    assert live > 80, f"only {live} receipts reach a 'live' liveness verdict"
+    assert unsupported_receipts >= 6, (
+        f"only {unsupported_receipts} receipts exercise an unsupported receipt `spec` "
+        f"-- the column is compared but nothing sets it")
+    assert unsupported_sigs >= 6, (
+        f"only {unsupported_sigs} receipts exercise an unsupported signature `spec` "
+        f"-- the column is compared but nothing sets it")
+
+    # `reproduced` USED TO BE PROJECTED TO A BOOL HERE, which is how the reference
+    # spelling "not attempted" as False while both ports spelled it null survived with
+    # every suite green. It is compared as the three-valued field it is now, so the
+    # census has to prove the corpus reaches all THREE values -- a comparison that only
+    # ever sees True and False is exactly as dark as the projection it replaced.
+    # Measured on this corpus: 212 True, 8 False, 176 None.
+    for value, floor in ((True, 80), (False, 4), (None, 40)):
+        n = sum(1 for p in got.values() if col(p, 2, value))
+        assert n >= floor, (
+            f"only {n} receipts reach `reproduced == {value!r}` in all three -- the "
+            f"column is compared but that value is never set, so a split in it would "
+            f"be invisible")
 
 
 def test_a_kernel_two_of_three_cannot_execute_is_reported_the_same_by_those_two():

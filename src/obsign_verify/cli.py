@@ -20,10 +20,27 @@ def _report(path: Path, res: dict, quiet: bool) -> None:
     if quiet:
         return
     mark = "VERIFIED" if res["verified"] else "REFUSED"
-    print(f"  [{mark:^8}] {path.name}")
-    print(f"      integrity   {'ok' if res['integrity'] else 'FAIL'}")
-    print(f"      re-derived  {'ok' if res['reproduced'] else 'FAIL'}")
+    # A HEADLINE THAT HIDES AN UNPROVEN RUNG IS THE DEFECT, NOT THE VERDICT.
+    #
+    # `verified` deliberately still accepts an `indeterminate` liveness probe -- a
+    # verifier must not accuse an honest receipt of forgery because it was expensive
+    # to probe. But the reader who scans one line and stops must not come away
+    # believing the inputs were shown to reach the output when the probe ran out of
+    # budget before proving anything either way. The tag is the difference between
+    # "verified" and "verified, and here is what that word does not cover".
     live = res.get("input_liveness")
+    tag = ""
+    if res["verified"] and live == "indeterminate":
+        tag = "  (inputs unproven)"
+    elif res.get("unsupported"):
+        tag = "  (unsupported format - NOT verified)"
+    print(f"  [{mark:^8}] {path.name}{tag}")
+    print(f"      integrity   {'ok' if res['integrity'] else 'FAIL'}")
+    # Three-valued: None is "nothing was attempted" (an unrecognised format, a kernel
+    # this verifier cannot run), which must not be printed as FAIL -- that reads as an
+    # accusation, and this tool never accuses a receipt of being forged for being
+    # unreadable. Matches js/bin/obsign-verify.js word for word.
+    print(f"      re-derived  {'not attempted' if res['reproduced'] is None else ('ok' if res['reproduced'] else 'FAIL')}")
     if live and live != "n/a":
         # "guarded" was missing, so a receipt REFUSED for it printed a bare word with
         # no FAIL beside it -- the one line a reader scans to see which rung failed.
@@ -31,11 +48,18 @@ def _report(path: Path, res: dict, quiet: bool) -> None:
                  "dead": "FAIL - the output ignores every declared input",
                  "guarded": "FAIL - the program trapped on every perturbation, so "
                             "nothing was shown to reach the output",
-                 "indeterminate": "unproven (probe budget reached)"}.get(live, live)
+                 "indeterminate": "UNPROVEN (probe budget reached) - semantic "
+                                  "validity not established"}.get(live, live)
         print(f"      inputs      {shown}")
+    if res.get("approved_program") is not None:
+        print(f"      program     {'ok - matches the approved digest' if res['approved_program'] else 'FAIL - not the approved program'}")
     sig = res.get("signature") or {}
     if not sig.get("present"):
         print("      signature   absent (integrity and re-derivation still hold)")
+    elif sig.get("unsupported"):
+        # "I did not read it" is a THIRD answer, and printing it as FAIL would say the
+        # signature was checked and found wanting.
+        print("      signature   UNSUPPORTED spec - nothing was checked")
     else:
         who = sig.get("attributed_signer")
         # Never print a signer name the signature did not cover. A v1 signature's
@@ -165,7 +189,7 @@ def _chain(args) -> int:
             receipts.append(load_receipt(path.read_text(encoding="utf-8")))
         except Exception as exc:
             unreadable.append(f"{path.name}: {type(exc).__name__}: {exc}")
-    g = verify_graph(receipts)
+    g = verify_graph(receipts, strict_liveness=args.strict_liveness)
 
     if args.json:
         print(json.dumps({**g, "unreadable": unreadable}, indent=2))
@@ -198,7 +222,16 @@ def _chain(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="obsign-verify",
-        description="Re-derive an Obsign receipt's claim on your own machine.")
+        description="Re-derive an Obsign receipt's claim on your own machine.",
+        # NO ABBREVIATIONS. argparse accepts any unambiguous PREFIX by default, so
+        # `--strict-livenes` (one letter short) silently meant `--strict-liveness`
+        # here while the npm and Rust CLIs rejected the same argv -- three tools
+        # disagreeing about what a command line means. Worse than the split: an
+        # abbreviation is only unambiguous until the next flag is added, so adding a
+        # `--strict-mode` later would silently repoint every script that had been
+        # writing `--strict`, with no diagnostic on either side of the change. A
+        # verifier must not GUESS which security switch the operator meant.
+        allow_abbrev=False)
     ap.add_argument("receipts", nargs="*", type=Path)
     ap.add_argument("--self-check", action="store_true",
                     help="verify the bundled challenge: 2 honest receipts and 7 "
@@ -210,6 +243,19 @@ def main(argv: list[str] | None = None) -> int:
                          "program (its program_sha256). Turns 'did this re-derive?' "
                          "into 'did this re-derive from the program my validator "
                          "approved?'")
+    ap.add_argument("--strict-liveness", action="store_true",
+                    help="refuse a receipt whose input-liveness probe ended "
+                         "'indeterminate'. The default accepts it -- a verifier must "
+                         "not accuse an honest receipt of forgery for being expensive "
+                         "to probe -- but an audited program should not rest on a "
+                         "probe that ran out of budget.")
+    ap.add_argument("--chain-list", metavar="FILE", default=None, type=Path,
+                    help="read receipt paths from FILE, one per line, instead of "
+                         "(or as well as) naming them in argv. A chain of thousands "
+                         "of nodes is past the command-line length limit on Windows "
+                         "(8191 characters), which is a refusal to RUN rather than a "
+                         "verdict -- and the deep-chain property is exactly the one "
+                         "that needs thousands of nodes to exercise.")
     ap.add_argument("--chain", action="store_true",
                     help="verify the given receipts as a GRAPH: every node "
                          "re-derived, every params.links binding checked value-for-"
@@ -220,8 +266,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.self_check:
         return _self_check(args.quiet)
+
+    # A LIST FILE IS THE SAME ARGUMENT LIST, DELIVERED THROUGH A CHANNEL WITH NO LIMIT.
+    # Blank lines and `#` comments are dropped so a generated list stays readable.
+    if args.chain_list is not None:
+        try:
+            listed = args.chain_list.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            ap.error(f"cannot read --chain-list {args.chain_list}: {exc}")
+        args.receipts = list(args.receipts) + [
+            Path(line.strip()) for line in listed
+            if line.strip() and not line.lstrip().startswith("#")]
+
     if not args.receipts:
-        ap.error("give one or more receipt files, or --self-check")
+        ap.error("give one or more receipt files, --chain-list FILE, or --self-check")
 
     if args.chain:
         return _chain(args)
@@ -234,12 +292,11 @@ def main(argv: list[str] | None = None) -> int:
             failures += 1
             report.append({"file": str(path), "verified": False,
                            "notes": [f"unreadable: {type(exc).__name__}: {exc}"]})
-            if not args.quiet:
+            if not (args.quiet or args.json):
                 print(f"  [ REFUSED ] {path.name}: unreadable ({exc})")
             continue
-        res = verify(receipt)
-
-        # PROGRAM PINNING -- the answer to the sharpest attack on the replay rung.
+        # PROGRAM PINNING -- the answer to the sharpest attack on the replay rung --
+        # is now a LIBRARY argument, not CLI post-processing.
         #
         # Re-derivation proves the output follows FROM THE PROGRAM. It cannot prove
         # the program computes what its name claims: a two-instruction program that
@@ -252,19 +309,23 @@ def main(argv: list[str] | None = None) -> int:
         # approves it, and records its digest. From then on the question stops being
         # "did this re-derive?" and becomes "did this re-derive FROM THE PROGRAM I
         # APPROVED?", which is the question an auditor was asking all along.
-        if args.expect_program:
-            actual = ((receipt.get("params") or {}).get("program_sha256")
-                      if isinstance(receipt.get("params"), dict) else None)
-            if actual != args.expect_program:
-                res = dict(res, verified=False,
-                           notes=list(res["notes"]) + [
-                               f"program is not the approved one: expected "
-                               f"{args.expect_program[:16]}.., receipt carries "
-                               f"{str(actual)[:16]}.."])
+        #
+        # Living in three CLIs meant every LIBRARY caller -- every service that
+        # imports the package instead of shelling out -- silently got the weaker
+        # question, with no field in the result to tell them so. `verify()` takes it
+        # now and reports `approved_program`.
+        res = verify(receipt, expect_program=args.expect_program,
+                     strict_liveness=args.strict_liveness)
 
         failures += 0 if res["verified"] else 1
         report.append({"file": str(path), **res})
-        _report(path, res, args.quiet)
+        #  MEANS MACHINE-READABLE, AND A MACHINE READS ALL OF STDOUT.
+        # This called _report unconditionally, so  printed the full human
+        # report and THEN the JSON array:  died on
+        # "Expecting value: line 1 column 4". The npm CLI has always suppressed the
+        # prose under --json; the flag whose entire purpose is to be parsed was the
+        # one that could not be.
+        _report(path, res, args.quiet or args.json)
 
     if args.json:
         print(json.dumps(report, indent=2))

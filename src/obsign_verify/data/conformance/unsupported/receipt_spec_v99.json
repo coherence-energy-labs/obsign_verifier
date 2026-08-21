@@ -1,0 +1,62 @@
+{
+  "spec": "obsign/receipt/v99",
+  "kernel": "obsign/replay/1",
+  "params": {
+    "program": {
+      "spec": "obsign/replay/1",
+      "mem": 4,
+      "steps": 100,
+      "consts": [
+        1
+      ],
+      "input": {
+        "offset": 0,
+        "length": 1
+      },
+      "output": {
+        "offset": 2,
+        "length": 1
+      },
+      "code": [
+        [
+          "LOADC",
+          1,
+          0
+        ],
+        [
+          "ADD",
+          2,
+          0,
+          1
+        ],
+        [
+          "HALT"
+        ]
+      ]
+    },
+    "program_sha256": "06a4ebfd55d1865f55867f667afd243a19d73ee9286adc5a288320ee075a75de",
+    "inputs": [
+      41
+    ]
+  },
+  "output": {
+    "dtype": "int64",
+    "length": 1,
+    "sha256": "ed049108bc18f2c64369e8d0ea42850bdd1a7d1dd340cfde716315579702a76c"
+  },
+  "receipt_sha256": "57d423ee265ed0a90a713ea204f1c0d281d6f0d10006ae8ecbd21847fb6e87d4",
+  "_conformance": {
+    "note": "A future or adversarial receipt format, RE-SEALED so its integrity holds: the claim hash is correct for the bytes present. The ladder used to dispatch on `kernel` alone, so this was re-executed under today's v1 semantics and could be reported VERIFIED. Unknown format means 'I do not know what these bytes mean', not 'I will interpret them as whatever my current implementation does'. Nothing is re-executed; the signature gate may still attribute.  is null -- NOT ATTEMPTED -- and not false, which would mean it was re-derived and did not match. All three implementations must say the same word.",
+    "expect": {
+      "verified": false,
+      "unsupported": true,
+      "signature_present": false,
+      "signature_valid": false,
+      "signature_unsupported": false,
+      "identity_bound": false,
+      "attributed_signer": null,
+      "reproduced": null,
+      "requires_crypto": false
+    }
+  }
+}

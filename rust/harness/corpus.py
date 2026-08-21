@@ -212,6 +212,37 @@ def suspected_divergences() -> list[tuple[str, str]]:
     cases.append(("suspect:constant-program-dead-inputs",
                   seal(replay_receipt(program=const_prog))))
 
+    # THE TWO RECEIPTS THE LIVENESS PORT IS ABOUT, and the reason the differential had
+    # to soften two whole columns before it was done.
+    #
+    # 1. COARSE SCALE. An honest total held in cents and reported in hundreds of
+    #    millions. The old ladder was seven fixed ABSOLUTE deltas, the largest
+    #    1,000,000, so nothing it tried could move `cents / 100000000` -- and the
+    #    verifier refused the receipt as "a constant dressed as a computation". The
+    #    input is 15,600,000 clear of a rounding boundary, so the coarseness is not an
+    #    accident of the value chosen. This must be `live` in all three.
+    coarse = {"spec": "obsign/replay/1", "mem": 4, "steps": 100,
+              "consts": [100_000_000], "input": {"offset": 0, "length": 1},
+              "output": {"offset": 2, "length": 1},
+              "code": [["LOADC", 1, 0], ["DIV", 2, 0, 1], ["HALT"]]}
+    for label, value in [("cents", 743_215_600_000), ("gigabytes", 8 * 10**12),
+                         ("negative", -743_215_600_000), ("zero", 0)]:
+        cases.append((f"suspect:coarse-scale-{label}",
+                      seal(replay_receipt(program=coarse, inputs=[value]))))
+
+    # 2. THE CHEAPEST MACHINE AROUND THE MOST EXPENSIVE INSTANTIATION: one HALT, a
+    #    megacell of memory, 40 declared inputs. The old budget counted VM STEPS, and
+    #    this program retires ONE step per probe while re-allocating `mem`, so a
+    #    4,000,000-step budget bought four million full machine instantiations -- 8.0 s
+    #    in Python and 14.0 s in Node for a 1.7 KB file, hours at the wire limit. The
+    #    three implementations must now agree on how many probes this affords, which
+    #    they can only do if all three charge the same COST for a run.
+    halt_only = {"spec": "obsign/replay/1", "mem": 1 << 20, "steps": 1, "consts": [],
+                 "input": {"offset": 0, "length": 40},
+                 "output": {"offset": 0, "length": 1}, "code": [["HALT"]]}
+    cases.append(("suspect:halt-only-megacell",
+                  seal(replay_receipt(program=halt_only, inputs=[7] * 40))))
+
     # A constant behind an equality guard: every perturbation TRAPS, which is a refusal
     # to run rather than evidence about the output.
     guarded = {"spec": "obsign/replay/1", "mem": 8, "steps": 200,
@@ -235,6 +266,25 @@ def suspected_divergences() -> list[tuple[str, str]]:
                   seal(replay_receipt(kernel="obsign/replay/2"))))
     p = dict(LIVE_PROG, spec="obsign/replay/2")
     cases.append(("suspect:unknown-program-spec", seal(replay_receipt(program=p))))
+
+    # THE RECEIPT SPEC ITSELF. The ladder dispatched on `kernel` with no top-level
+    # format check, so a document declaring a spec nobody has implemented was
+    # interpreted under today's v1 semantics -- and RE-SEALED, as these are, its
+    # integrity holds, so the only thing standing between it and a VERIFIED verdict
+    # was the absence of a question. The control below is the same claim under the
+    # supported spec: it must still verify, or the v99 case proves nothing.
+    cases.append(("suspect:receipt-spec-v1-control", seal(replay_receipt())))
+    cases.append(("suspect:receipt-spec-v99",
+                  seal(replay_receipt(spec="obsign/receipt/v99"))))
+    cases.append(("suspect:receipt-spec-v2", seal(replay_receipt(spec="obsign/receipt/v2"))))
+    r = replay_receipt()
+    r.pop("spec")
+    cases.append(("suspect:receipt-spec-absent", seal(r)))
+    # A spec of the wrong TYPE is not the token either, and must not be read as absent.
+    for label, value in [("number", 1), ("true", True), ("null", None),
+                         ("object", {"v": "obsign/receipt/v1"})]:
+        cases.append((f"suspect:receipt-spec-is-{label}",
+                      seal(replay_receipt(spec=value))))
 
     # An `env`-only change must not move the claim hash.
     r = replay_receipt(env={"platform": "somewhere else", "n": 1e-06})
@@ -307,6 +357,47 @@ def signed_cases() -> list[tuple[str, str]]:
                        "signer": "A. Chen",
                        "sig": sk.sign(v1["receipt_sha256"].encode("ascii")).hex()}
     cases.append(("sig:v1-legacy", json.dumps(v1)))
+
+    # THE SPEC FALL-THROUGH, EXECUTED. One GENUINE v1 signature, relabelled. The
+    # dispatch read `if v2 ... else legacy v1`, so every unknown envelope inherited the
+    # weakest historical semantics -- and because the bytes below really do verify
+    # under v1 rules, the v9 case was reported as a VALID SIGNATURE on a format nobody
+    # here can describe. The three cases differ in the `spec` STRING and in nothing
+    # else, so what they measure cannot be argued about.
+    v1_sig = sk.sign(v1["receipt_sha256"].encode("ascii")).hex()
+    for label, spec in [("v1-explicit", "obsign/signature/v1"),
+                        ("absent", None),
+                        ("v9-unknown", "obsign/signature/v9"),
+                        ("v3-unknown", "obsign/signature/v3"),
+                        ("empty-string", ""),
+                        ("v2-uppercased", "OBSIGN/SIGNATURE/V2")]:
+        block = {"alg": "ed25519", "public_key": pk, "signer": "A. Chen", "sig": v1_sig}
+        if spec is not None:
+            block = {"spec": spec, **block}
+        doc = dict(base())
+        doc["signature"] = block
+        cases.append((f"sig:spec-{label}", json.dumps(doc)))
+    # A spec of the wrong TYPE is not the token, and must not be read as absent: that
+    # would hand a non-string spec the legacy envelope by the back door.
+    for label, bad in [("number", 9), ("true", True), ("null", None),
+                       ("array", ["obsign/signature/v1"])]:
+        doc = dict(base())
+        doc["signature"] = {"spec": bad, "alg": "ed25519", "public_key": pk,
+                            "signer": "A. Chen", "sig": v1_sig}
+        cases.append((f"sig:spec-is-{label}", json.dumps(doc)))
+    # `public_key` of the wrong shape, beside the empty `sig` below: both are places
+    # where "present but useless" and "absent" were spelled differently in Python
+    # (isinstance, which admits "") and JavaScript (falsy, which does not).
+    for label, bad in [("empty-string", ""), ("number", 5), ("null", None)]:
+        doc = dict(base())
+        doc["signature"] = {"spec": "obsign/signature/v1", "alg": "ed25519",
+                            "public_key": bad, "signer": "A. Chen", "sig": v1_sig}
+        cases.append((f"sig:public-key-is-{label}", json.dumps(doc)))
+    for label, bad in [("empty-string", ""), ("number", 5), ("null", None)]:
+        doc = dict(base())
+        doc["signature"] = {"spec": "obsign/signature/v1", "alg": "ed25519",
+                            "public_key": pk, "signer": "A. Chen", "sig": bad}
+        cases.append((f"sig:v1-sig-member-is-{label}", json.dumps(doc)))
 
     # `sig` of the wrong TYPE beside a real `signature` member: a fallback between
     # spellings that reads a number as "absent" verifies a block the reference refuses.
@@ -718,4 +809,58 @@ def graph_cases() -> list[tuple[str, list[str]]]:
     cases.append(("graph:self-link", [json.dumps(doc)]))
 
     cases.append(("graph:not-an-object", ["[1,2,3]"]))
+    cases.extend(_laundering_cases())
     return cases
+
+
+#: A spin count measured to cut the cell sweep short (~0.1 s per verify), so the
+#: laundered cell reads `indeterminate` instead of `dead`. The rule keyed on `dead`
+#: alone, which made it switchable off by the party it constrains.
+_LAUNDER_SPIN = 20_000
+_LAUNDER_N_IN, _LAUNDER_IN_BASE = 8, 16
+
+
+def _launder_program(spin: int, constant_cell: bool) -> dict:
+    """out[1] = sum(inputs), always live. out[0] is a literal, or a copy of the sum.
+
+    `spin` is consts[3] and nothing else, so the cheap and costly variants differ in
+    exactly one number and only the probe budget can explain a verdict change.
+    """
+    tail = [["LOADC", 0, 0]] if constant_cell else [["MOV", 0, 1]]
+    return {
+        "spec": "obsign/replay/1", "mem": 64, "steps": 8_000_000,
+        "consts": [424242, 0, 1, spin, _LAUNDER_IN_BASE, _LAUNDER_N_IN],
+        "input": {"offset": _LAUNDER_IN_BASE, "length": _LAUNDER_N_IN},
+        "output": {"offset": 0, "length": 2},
+        "code": [
+            ["LOADC", 1, 1], ["LOADC", 2, 4], ["LOADC", 3, 1], ["LOADC", 4, 2],
+            ["LOADC", 5, 5], ["LOAD", 6, 2], ["ADD", 1, 1, 6], ["ADD", 2, 2, 4],
+            ["ADD", 3, 3, 4], ["LT", 7, 3, 5], ["JMPNZ", 7, 5], ["LOADC", 8, 3],
+            ["JMPZ", 8, 15], ["SUB", 8, 8, 4], ["JMP", 12], *tail, ["HALT"],
+        ],
+    }
+
+
+def _laundering_cases() -> list[tuple[str, list[str]]]:
+    """THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS.
+
+    Both refusals and both acceptances, because a rule that only ever refuses is not a
+    rule. See docs/GRAPHS.md and tests/test_a_chain_may_not_carry_a_constant.py.
+    """
+    from obsign_verify import mint
+    from obsign_verify.replayc import compile_source
+
+    out: list[tuple[str, list[str]]] = []
+    for label, spin, constant in (("laundered-constant", 0, True),
+                                  ("laundered-indeterminate", _LAUNDER_SPIN, True),
+                                  ("honest-cheap", 0, False),
+                                  ("honest-costly", _LAUNDER_SPIN, False)):
+        prog = _launder_program(spin, constant)
+        child = mint.replay_receipt(prog, list(range(3, 3 + _LAUNDER_N_IN)))
+        link, values = mint.link(child, dst_offset=0, src_offset=0, length=1)
+        parent_inputs = mint.compose_inputs(1, [(link, values)], base=[0])
+        parent = mint.replay_receipt(compile_source("input x; output x + x;"),
+                                     parent_inputs, links=[link])
+        out.append((f"graph:{label}",
+                    [json.dumps(child), json.dumps(parent)]))
+    return out

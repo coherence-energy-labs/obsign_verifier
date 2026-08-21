@@ -12,7 +12,12 @@ $ obsign-verify receipt.json
   [VERIFIED] receipt.json
       integrity   ok
       re-derived  ok
+      inputs      ok - the output depends on the declared inputs
       signature   ok, signer BOUND (A. Chen, Coherence Energy Labs)
+      - input-liveness is EVIDENCE, not proof: perturbing an input moved the
+        output, which shows dependence but cannot show the program computes the
+        formula its name claims. Pin an approved program digest
+        (--expect-program) for that.
 
 1/1 receipt(s) verified on THIS machine.
 ```
@@ -42,8 +47,14 @@ byte-identical agreement.
 |---|---|
 | **integrity** — does `receipt_sha256` recompute from the claim? | every receipt |
 | **re-derived** — does re-running the program reproduce the output? | `obsign/replay/1` |
+| **input-liveness** — does perturbing a declared input ever move the output? | `obsign/replay/1` |
 | **signature** — does the Ed25519 signature verify, and cover what it claims to? | every signed receipt |
 | **issuer trust** | out of scope in every implementation, deliberately |
+
+Every rule this port implements is specified in `docs/SPEC.md` — the wire limits, the
+canonical form, the 31-opcode machine, the liveness probe and the signature envelope —
+so the two implementations can be compared against a document rather than against each
+other.
 
 It does **not** re-execute `tau_field_fixed`; those receipts report `re-derived: not
 attempted` with a note and are **never reported as verified** — a valid signature says
@@ -101,11 +112,23 @@ diverge silently on large ones — the worst failure shape available.
 
 Re-derivation proves the output follows **from the program**. It does not prove the
 program computes what its name claims: a two-instruction program returning a hardcoded
-constant re-derives perfectly, and this tool reports `VERIFIED` — correctly, because it
-did.
+constant re-derives perfectly, and the re-derivation is honest — it just establishes
+nothing about the inputs the receipt names.
 
-The answer is not a weaker verdict. Read the program once, approve it, record its
-digest:
+This port **refuses** that program rather than reporting `VERIFIED`. It perturbs each
+declared input, and if nothing ever moves the output it reports `input_liveness: dead`
+and fails the verdict; a constant hidden behind an equality guard — one that traps on
+anything but its own receipted inputs — is refused the same way, as `guarded`, because a
+program that declines to run yields no evidence either. This README said the opposite
+until 0.4.0, describing behaviour `js/src/verify.js` no longer had. The exact algorithm,
+identical in this port and the Python reference down to the perturbation ladder and the
+probe budget, is `docs/SPEC.md#the-input-liveness-probe`.
+
+A `live` verdict is **evidence of dependence, not proof of meaning**, and no finite
+black-box probe can be more than that: an adversary can always return the number they
+want for one exact set of inputs and run the real formula otherwise. So liveness is the
+floor, not the answer. The answer is not a weaker verdict either — read the program once,
+approve it, record its digest:
 
 ```console
 $ obsign-verify receipt.json --expect-program 3ba4e9302ac39c36...
@@ -113,6 +136,38 @@ $ obsign-verify receipt.json --expect-program 3ba4e9302ac39c36...
 
 The question stops being *"did this re-derive?"* and becomes *"did this re-derive from
 the program my validator approved?"*
+
+## Chains
+
+A receipt proves one computation. A **set** of receipts whose `params.links` bind each
+parent's input slices to other receipts' re-derived output slices proves a pipeline:
+
+```console
+$ obsign-verify --chain desk_*.json firm_root.json
+```
+
+Every node is re-executed, and every link is compared **value-for-value** against a
+fresh re-derivation of the child it names — nothing is taken from a stated hash that a
+recomputation could establish instead. Exit 0 only if the whole chain holds.
+
+Verifying the same files *without* `--chain` is a different and much weaker question:
+each receipt is checked on its own, and a link naming a receipt you were never handed
+is not looked at. Three verdicts stay distinguishable, because "I could not check this"
+and "this is false" are different facts:
+
+| verdict | meaning |
+| --- | --- |
+| `CHAIN VERIFIED` | every node re-derived, every link binds |
+| `CHAIN INCOMPLETE` | a referenced receipt was not supplied, or a link carries values that were never shown to depend on anything — not forged, not established |
+| `CHAIN REFUSED` | a node failed, or a link lied about where its inputs came from |
+
+The second row is doing real work. `verify` refuses a receipt whose output ignores every
+declared input — "a constant dressed as a computation" — but an output window is a
+*vector*, so that check is passed by one decoy cell (`output 424242, a + b;`) and then
+linking only cell 0. The same rule applied to **the slice the link actually carries**
+closes it: a slice that never moved under any perturbation is `REFUSED`, and a slice the
+probe ran out of budget on is `INCOMPLETE` rather than silently accepted. `--chain
+--strict-liveness` demands a positive demonstration and refuses both.
 
 ## Links
 

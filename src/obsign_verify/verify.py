@@ -25,6 +25,17 @@ from .canonical import integrity
 from . import replay as replaymod
 from .kernel import SUPPORTED_KERNELS, array_sha256, build_fixed_inputs, evolve
 
+#: The ONE receipt envelope this verifier implements.
+#:
+#: The first decision in verification is "do I know what these bytes are?", and it was
+#: never asked: the ladder dispatched on `kernel` alone, so a document declaring
+#: `spec: "obsign/receipt/v99"` -- a format whose claim boundary, whose params schema
+#: and whose output block nobody here has ever seen -- was interpreted under today's v1
+#: semantics and could be reported VERIFIED. Unknown format means "I do not know what
+#: these bytes mean", not "I will interpret them as whatever my current implementation
+#: does".
+RECEIPT_SPEC_V1 = "obsign/receipt/v1"
+
 
 def _signature_gate(receipt: dict, result: dict, notes: list) -> bool:
     """Run step 3 and return whether it permits a `verified` verdict.
@@ -359,7 +370,8 @@ def _input_liveness(prog: dict, inputs: list, base_out, base_steps: int):
     return verdict, per_input, per_cell
 
 
-def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
+def _verify_replay(receipt: dict, result: dict, notes: list,
+                   strict_liveness: bool = False) -> dict:
     """Re-derive a receipt whose computation travels inside it.
 
     Two things are checked that the fixed-kernel path does not need, and both exist
@@ -438,7 +450,22 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     # a constant hiding beside a decoy that echoes an input, and graph.py refuses a
     # link whose source slice is entirely dead. See _input_liveness.
     result["output_liveness_by_cell"] = per_cell
-    live_ok = liveness not in ("dead", "guarded")
+    # THE DEFAULT ACCEPTS `indeterminate`, AND THE STRICT MODE DOES NOT.
+    #
+    # An expensive or cleverly constructed program can exhaust the probe budget and
+    # end with `input_liveness: "indeterminate"` and `verified: True` -- which is
+    # exactly what the default must do (a verifier that refused an honest receipt for
+    # being costly to probe would be accusing producers of forgery on a timing
+    # measurement) and exactly what an auditor of a regulated program must be able to
+    # switch off. `strict_liveness` demands a positive "live": nothing weaker, and
+    # "n/a" (a program declaring no inputs at all) is weaker.
+    live_ok = (liveness == "live") if strict_liveness else (
+        liveness not in ("dead", "guarded"))
+    if strict_liveness and liveness != "live":
+        notes.append(
+            f"--strict-liveness: input-liveness is {liveness!r} and only 'live' is "
+            f"accepted in strict mode - REFUSED without a positive demonstration "
+            f"that a declared input reaches the output")
     if liveness == "dead":
         notes.append(
             "the output does not depend on ANY declared input: every input was "
@@ -477,26 +504,108 @@ def _verify_replay(receipt: dict, result: dict, notes: list) -> dict:
     return result
 
 
-def verify(receipt: dict) -> dict:
+def _program_digest(receipt: dict) -> str | None:
+    """The digest of the program this receipt actually carries, or None.
+
+    COMPUTED, never read out of `params.program_sha256`. The stated field is a
+    convenience a producer can get wrong and a forger can simply write: pinning
+    against it would let anyone claim the approved program by typing its digest into
+    the file beside a different program. The receipt's own `digest_ok` rung already
+    refuses a stated digest that disagrees with the computed one, so on any receipt
+    that could be verified the two are the same value -- and where they differ, this
+    is the one that means "the program that ran".
+    """
+    params = receipt.get("params")
+    if not isinstance(params, dict):
+        return None
+    prog = params.get("program")
+    if not isinstance(prog, dict):
+        return None
+    try:
+        return replaymod.program_sha256(prog)
+    except Exception:
+        return None
+
+
+def verify(receipt: dict, expect_program: str | None = None,
+           strict_liveness: bool = False) -> dict:
     """Run the ladder. Never raises on a hostile receipt.
 
     A verifier that crashes on malformed input has failed open in the eyes of
     whoever handed it the file: an exception is not a refusal.
+
+    `expect_program` PINS THE SEMANTIC BOUNDARY, and it lives here rather than in the
+    CLI. Re-derivation proves the output follows FROM THE PROGRAM; it cannot prove the
+    program computes what its name claims, and no finite black-box probe can (see
+    `_input_liveness`). A validator reads the program ONCE, approves it, and records
+    its digest; from then on the question is "did this re-derive from the program I
+    approved?". That was CLI post-processing in three implementations, which meant
+    every library caller -- every service that imports this package -- got the weaker
+    question and no field telling them so. `approved_program` is now part of the
+    result: None when no expectation was supplied, True/False when one was.
+
+    `strict_liveness` turns an `indeterminate` liveness verdict into a refusal. The
+    default is unchanged and still accepts it.
     """
     notes: list[str] = []
     result = {
         "integrity": False,
-        "reproduced": False,
+        # THREE-VALUED, AND THE REFERENCE WAS THE ONE IMPLEMENTATION THAT SAID SO
+        # ONLY IN ITS DOCUMENTATION. None means NOTHING WAS ATTEMPTED -- an
+        # unrecognised receipt spec, a kernel this verifier cannot execute, a receipt
+        # with no params -- which is a different fact from False ("it was re-derived
+        # and it did not match"). `js/src/verify.js` and `rust/src/verify.rs` both
+        # initialise to null/None and both document `reproduced: null`; this
+        # initialised to False, so on the same bytes a reader got `false` from the
+        # reference and `null` from both ports, and the three-way differential
+        # PROJECTED THE COLUMN AWAY (`d["reproduced"] is True`) rather than closing
+        # it. A softened column is a gate that cannot fail.
+        "reproduced": None,
         "signature": None,
         "verified": False,
+        # "this verifier does not implement this format" -- never "this is forged".
+        "unsupported": False,
+        # None means NO EXPECTATION WAS SUPPLIED, which is a different fact from False.
+        "approved_program": None,
         "notes": notes,
     }
+
+    def finish(res: dict) -> dict:
+        """Apply the approved-program pin, whichever rung returned.
+
+        It runs on EVERY path, including the ones that could not re-execute: a
+        receipt whose kernel this verifier cannot run is not thereby an approved
+        program, and returning `approved_program: None` there would read as "no
+        expectation was supplied" when one was.
+        """
+        if expect_program is None:
+            return res
+        actual = _program_digest(receipt)
+        res["approved_program"] = (actual == expect_program)
+        if not res["approved_program"]:
+            res["verified"] = False
+            notes.append(f"program is not the approved one: expected "
+                         f"{str(expect_program)[:16]}.., receipt carries "
+                         f"{str(actual)[:16]}..")
+        return res
 
     try:
         ok, detail = integrity(receipt)
         result["integrity"] = ok
         if not ok:
             notes.append(detail)
+
+        # THE FIRST DECISION IS THE FORMAT, AND IT COMES BEFORE KERNEL SELECTION.
+        # An unrecognised `spec` is not re-executed under v1 semantics and is not
+        # accused of anything either: nothing here knows what it claims. The signature
+        # gate still runs, because "who signed this file" is answerable without
+        # knowing what the file means -- but it can only ever attribute, never verify.
+        if receipt.get("spec") != RECEIPT_SPEC_V1:
+            notes.append(f"receipt spec {receipt.get('spec')!r} is not supported by "
+                         f"this verifier - UNSUPPORTED, not verified")
+            result["unsupported"] = True
+            _signature_gate(receipt, result, notes)
+            return finish(result)
 
         kernel = receipt.get("kernel")
 
@@ -506,20 +615,20 @@ def verify(receipt: dict) -> dict:
         # whole difference between a receipt a stranger can check and one they
         # cannot. See replay.py for why nondeterminism is not expressible there.
         if kernel == replaymod.SPEC:
-            return _verify_replay(receipt, result, notes)
+            return finish(_verify_replay(receipt, result, notes, strict_liveness))
 
         if kernel not in SUPPORTED_KERNELS:
             notes.append(f"kernel {kernel!r} cannot be re-executed by this verifier "
                          f"(supported: {', '.join(SUPPORTED_KERNELS)}) - "
                          f"NOT verified by re-derivation")
             _signature_gate(receipt, result, notes)
-            return result
+            return finish(result)
 
         params = receipt.get("params")
         if not isinstance(params, dict):
             notes.append("receipt carries no params; nothing to re-execute")
             _signature_gate(receipt, result, notes)
-            return result
+            return finish(result)
 
         inp = build_fixed_inputs(params)
 
@@ -555,8 +664,14 @@ def verify(receipt: dict) -> dict:
 
         result["verified"] = bool(result["integrity"] and result["reproduced"]
                                   and input_ok and shape_ok and dtype_ok and sig_ok)
-        return result
+        return finish(result)
     except Exception as exc:
         notes.append(f"verification error, treated as NOT verified: "
                      f"{type(exc).__name__}: {exc}")
-        return result
+        # The pin still gets an answer. Leaving `approved_program: None` here would
+        # read as "no expectation was supplied" to a caller that supplied one, which
+        # is the one thing this tri-state exists to keep apart.
+        try:
+            return finish(result)
+        except Exception:                    # never raise past this function
+            return result

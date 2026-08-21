@@ -18,7 +18,7 @@
 
 use crate::json::{canonical_string, claim_of, Value};
 use crate::replay;
-use crate::verify::verify;
+use crate::verify::verify_with;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The first 16 CHARACTERS of a digest, for notes.
@@ -105,6 +105,11 @@ struct Node<'a> {
     verified: bool,
     links_ok: LinksOk,
     notes: Vec<String>,
+    /// `output_liveness_by_cell` from this node's standalone ladder -- which output
+    /// cells a perturbation of the declared inputs was ever seen to move. The link
+    /// rule below reads it; without it this implementation accepted a chain the
+    /// reference refuses, which is the one disagreement the format cannot absorb.
+    cells: Vec<String>,
 }
 
 /// What tells two receipts carrying the SAME claim apart. A document that will not
@@ -114,9 +119,21 @@ fn envelope_key(receipt: &Value, index: usize) -> String {
     canonical_string(receipt).unwrap_or_else(|_| format!("<uncanonicalisable envelope #{index}>"))
 }
 
-/// Verify RECEIPTS individually and transitively. Never fails on hostile input -- an
-/// exception is not a refusal, on a graph exactly as on a single receipt.
+/// Verify RECEIPTS individually and transitively, with the default liveness policy.
+///
+/// Never fails on hostile input -- an exception is not a refusal, on a graph exactly
+/// as on a single receipt.
 pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
+    verify_graph_with(receipts, false)
+}
+
+/// As `verify_graph`, with the `--strict-liveness` switch.
+///
+/// It reaches BOTH rungs of the chain: each node's standalone ladder, and the rule
+/// that asks whether the slice a link carries was ever shown to move. `--chain
+/// --strict-liveness` used to parse the flag and change nothing, in this
+/// implementation and in the reference alike.
+pub fn verify_graph_with(receipts: &[Value], strict_liveness: bool) -> GraphVerdict {
     let mut graph_notes: Vec<String> = Vec::new();
     let mut order_of_insertion: Vec<String> = Vec::new();
     let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
@@ -140,6 +157,7 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
                     verified: false,
                     links_ok: LinksOk::NotApplicable,
                     notes: vec!["not a JSON object".into()],
+                    cells: Vec::new(),
                 },
             );
             order_of_insertion.push(key);
@@ -160,6 +178,7 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
                         verified: false,
                         links_ok: LinksOk::NotApplicable,
                         notes: vec![format!("claim is not canonicalisable ({e})")],
+                        cells: Vec::new(),
                     },
                 );
                 order_of_insertion.push(key);
@@ -196,6 +215,7 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
                 verified: false,
                 links_ok: LinksOk::NotApplicable,
                 notes: Vec::new(),
+                cells: Vec::new(),
             },
         );
         canon.insert(digest.clone(), cstr);
@@ -226,8 +246,14 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
         let envelopes: Vec<&Value> = node.envelopes.values().flatten().copied().collect();
         let mut all_ok = true;
         let mut new_notes = Vec::new();
-        for env in envelopes {
-            let res = verify(env);
+        let mut cells: Vec<String> = Vec::new();
+        for (n, env) in envelopes.iter().enumerate() {
+            let res = verify_with(env, None, strict_liveness);
+            if n == 0 {
+                // Every envelope carries the SAME claim, so the program, the inputs and
+                // therefore the cell verdict are identical; the first is representative.
+                cells = res.output_liveness_by_cell.clone();
+            }
             if !res.verified {
                 all_ok = false;
                 let head: Vec<String> = res.notes.iter().take(2).cloned().collect();
@@ -237,6 +263,7 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
         let node = nodes.get_mut(digest).unwrap();
         node.verified = all_ok;
         node.notes.extend(new_notes);
+        node.cells = cells;
     }
 
     // Re-derive outputs once per node that anything links to.
@@ -384,6 +411,78 @@ pub fn verify_graph(receipts: &[Value]) -> GraphVerdict {
                     src + len,
                     head16(&child_digest)
                 ));
+                continue;
+            }
+
+            // THE SLICE THAT TRAVELS MUST BE THE PART THAT DEPENDS ON THE INPUTS.
+            //
+            // This rule did not exist here at all. `verify` refuses a node whose whole
+            // output ignores every declared input, and an output window is a VECTOR, so
+            // that check is passed by appending one decoy cell and linking only the
+            // constant one: every input is live, the node verifies, and a hardcoded
+            // value travels the chain. The reference refused exactly that; this
+            // implementation returned exit 0 on the same bytes, which hands a forger a
+            // choice of verifier on the one rung a supply chain exists to establish.
+            //
+            // The verdict is THREE-VALUED, because the cell verdict is:
+            //
+            //   any cell live  -> the link binds something that demonstrably moved
+            //   else any indeterminate (or the probe did not cover the slice)
+            //                  -> INCOMPLETE: not forged, not established either
+            //   else all dead  -> FORGED: the values are constants
+            //
+            // `Incomplete` is what this graph already says for "a child was not
+            // supplied": out of green without calling the producer a forger, which is
+            // right for an honest receipt too expensive to sweep. A rule keyed on
+            // `dead` alone would be switchable off by the party it constrains -- one
+            // long enough spin loop in the child moves its laundered cell to
+            // `indeterminate`. Under strict liveness there is no benefit of the doubt.
+            let child_cells = &nodes[&child_digest].cells;
+            let lo = src as usize;
+            let hi = lo.saturating_add(len as usize);
+            let covered = hi <= child_cells.len();
+            let slice: &[String] = if covered { &child_cells[lo..hi] } else { &[] };
+            let all_dead = covered && !slice.is_empty() && slice.iter().all(|s| s == "dead");
+            let any_live = slice.iter().any(|s| s == "live");
+            if all_dead {
+                links_ok = LinksOk::Bad;
+                notes.push(format!(
+                    "link source output[{src}..{}) of {}.. never moved under ANY \
+                     perturbation of that receipt's inputs: the values this link carries \
+                     are constants, so the chain proves nothing about them however well \
+                     every node re-derives",
+                    src + len,
+                    head16(&child_digest)
+                ));
+            } else if !any_live {
+                let why = if covered {
+                    "the probe hit its budget before deciding these cells"
+                } else {
+                    "the probe's cell verdict does not cover this slice"
+                };
+                if strict_liveness {
+                    links_ok = LinksOk::Bad;
+                    notes.push(format!(
+                        "--strict-liveness: link source output[{src}..{}) of {}.. was \
+                         never shown to move under ANY perturbation ({why}) - REFUSED \
+                         without a positive demonstration that the values this link \
+                         carries are derived",
+                        src + len,
+                        head16(&child_digest)
+                    ));
+                } else {
+                    if links_ok == LinksOk::Ok {
+                        links_ok = LinksOk::Incomplete;
+                    }
+                    notes.push(format!(
+                        "link source output[{src}..{}) of {}.. was not shown to depend on \
+                         that receipt's inputs ({why}), so the chain does not establish \
+                         that these values were computed rather than hardcoded -- \
+                         incomplete, not forged",
+                        src + len,
+                        head16(&child_digest)
+                    ));
+                }
             }
         }
         let node = nodes.get_mut(d).unwrap();
