@@ -41,6 +41,8 @@ for (const [name, texts] of cases) {
     out[name] = {
       kind: 'chain',
       ok: c.ok,
+      complete: c.complete,
+      missing: (c.missing || []).slice().sort(),
       effective_assurance: c.effective_assurance,
       nodes,
     };

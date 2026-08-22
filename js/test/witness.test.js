@@ -53,7 +53,18 @@ function summarise(name, texts) {
   for (const [h, n] of Object.entries(c.nodes)) {
     nodes[h] = { verified: n.verified, links_ok: n.links_ok, assurance: n.assurance };
   }
-  return { kind: 'chain', ok: c.ok, effective_assurance: c.effective_assurance, nodes };
+  return {
+    kind: 'chain',
+    ok: c.ok,
+    // `complete` and `missing` are verdict fields, not bookkeeping: a chain is verified
+    // only when nothing referenced is absent, because withholding a weaker parent is
+    // how a chain is made to look stronger. Omitting them here would compare the two
+    // ports on everything EXCEPT the rule most recently added.
+    complete: c.complete,
+    missing: (c.missing || []).slice().sort(),
+    effective_assurance: c.effective_assurance,
+    nodes,
+  };
 }
 
 test('the corpus exercises both outcomes', () => {

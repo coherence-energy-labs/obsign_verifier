@@ -220,6 +220,12 @@ pub struct ChainNode {
 #[derive(Debug, Clone)]
 pub struct ChainVerdict {
     pub ok: bool,
+    /// False when a referenced `prior` was not supplied. Load-bearing, not decorative:
+    /// taking the MINIMUM rung only defends against a weak link that is PRESENT, and
+    /// withholding one beats it. `verify_graph` already requires completeness for
+    /// `graph_verified`; a truncated chain is a fragment, not a verified chain.
+    pub complete: bool,
+    pub missing: Vec<String>,
     pub effective_assurance: Option<String>,
     pub nodes: Vec<(String, ChainNode)>,
     pub notes: Vec<String>,
@@ -249,6 +255,8 @@ fn digests_of(doc: &Value, key: &str) -> Vec<String> {
 pub fn verify_chain(docs: &[Value]) -> ChainVerdict {
     let mut out = ChainVerdict {
         ok: false,
+        complete: false,
+        missing: Vec::new(),
         effective_assurance: None,
         nodes: Vec::new(),
         notes: Vec::new(),
@@ -280,6 +288,7 @@ pub fn verify_chain(docs: &[Value]) -> ChainVerdict {
     }
 
     let mut weakest: Option<i32> = None;
+    let mut missing: Vec<String> = Vec::new();
     for (h, d) in &by_hash {
         let is_witness = d.get("spec").and_then(|v| v.as_str()).as_deref() == Some(SPEC);
         // A non-witness document is NOT judged here: a witness verifier rendering a
@@ -330,6 +339,11 @@ pub fn verify_chain(docs: &[Value]) -> ChainVerdict {
                 .unwrap_or_else(|| "?".to_string());
             match parent {
                 None => {
+                    if let Some(x) = ph.as_deref() {
+                        if !x.is_empty() && !missing.iter().any(|m| m == x) {
+                            missing.push(x.to_string());
+                        }
+                    }
                     if out.nodes[idx].1.links_ok == LinksOk::Yes {
                         out.nodes[idx].1.links_ok = LinksOk::Incomplete;
                     }
@@ -373,11 +387,21 @@ pub fn verify_chain(docs: &[Value]) -> ChainVerdict {
         Some(w) if w >= 0 => Some(LADDER[w as usize].to_string()),
         _ => None,
     };
-    out.ok = out
+    missing.sort();
+    out.complete = missing.is_empty();
+    out.missing = missing;
+    let every_node_ok = out
         .nodes
         .iter()
         .all(|(_, n)| n.verified && n.links_ok != LinksOk::No);
-    if out.ok {
+    out.ok = !out.nodes.is_empty() && out.complete && every_node_ok;
+    if !out.complete {
+        out.notes.push(format!(
+            "INCOMPLETE: {} referenced document(s) were not supplied, so the chain's              origin is unknown and {:?} is the assurance of the FRAGMENT provided, not              of the chain. Withholding a weaker parent is how a chain is made to look              stronger than it is. This is not a forgery finding -- produce the missing              documents to settle it.",
+            out.missing.len(),
+            out.effective_assurance.clone().unwrap_or_default()
+        ));
+    } else if out.ok {
         let eff = out.effective_assurance.clone().unwrap_or_default();
         out.notes.push(format!(
             "chain of {} document(s); effective assurance is the WEAKEST link: {:?} -- {}",

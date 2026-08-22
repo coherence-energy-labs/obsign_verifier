@@ -329,6 +329,8 @@ fn harness(mode: &str, path: &str) {
                     obj(vec![
                         ("kind", s("chain")),
                         ("ok", Value::Bool(c.ok)),
+                        ("complete", Value::Bool(c.complete)),
+                        ("missing", strings(&c.missing)),
                         ("effective_assurance", match &c.effective_assurance {
                             Some(a) => s(a),
                             None => Value::Null,

@@ -173,11 +173,28 @@ fn the_rust_port_reproduces_python_verdicts_on_every_fixture() {
             let c = witness::verify_chain(&docs);
             let want_ok = as_bool(get(expected, "ok"));
             let want_eff = as_string(get(expected, "effective_assurance"));
-            if Some(c.ok) != want_ok || c.effective_assurance != want_eff {
+            // `complete` is compared too. A chain is verified only when nothing
+            // referenced is absent -- withholding a weaker parent is how a chain is made
+            // to look stronger than it is -- so a port checked on `ok` alone is not
+            // being held to the rule that makes `ok` mean anything.
+            let want_complete = as_bool(get(expected, "complete"));
+            let want_missing = get(expected, "missing")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if Some(c.ok) != want_ok
+                || c.effective_assurance != want_eff
+                || Some(c.complete) != want_complete
+                || c.missing.len() != want_missing
+            {
                 mismatches.push(format!(
-                    "\n  {name}\n    python: ok={want_ok:?} effective={want_eff:?}\
-                     \n    rust  : ok={:?} effective={:?}",
-                    c.ok, c.effective_assurance
+                    "\n  {name}\n    python: ok={want_ok:?} effective={want_eff:?} \
+                     complete={want_complete:?} missing={want_missing}\
+                     \n    rust  : ok={:?} effective={:?} complete={:?} missing={}",
+                    c.ok,
+                    c.effective_assurance,
+                    c.complete,
+                    c.missing.len()
                 ));
             }
         }

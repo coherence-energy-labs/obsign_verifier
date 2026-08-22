@@ -121,6 +121,17 @@ def _corpus(tmp_path):
         [*upper, str(other), str(dst)], inputs=[other], outputs=[dst],
         prior=[{"receipt_sha256": intake["receipt_sha256"], "spec": intake["spec"]}])
 
+    # A TRUNCATED CHAIN: two documents, one referencing a parent nobody supplied.
+    # `chain_missing_parent` below hands over a single document, which the runners
+    # treat as the single-document path -- so until this case existed the chain
+    # completeness rule was never exercised by the differential at all. Withholding a
+    # weaker parent is how a chain is made to look stronger than it is, and it must be
+    # caught identically by all three ports.
+    withheld = witness.custody_record([src], note="a parent that will be withheld")
+    depends_on_withheld, _ = runner.run_witnessed(
+        [*upper, str(src), str(dst)], inputs=[src], outputs=[dst],
+        prior=[{"receipt_sha256": withheld["receipt_sha256"], "spec": withheld["spec"]}])
+
     j = lambda d: json.dumps(d)  # noqa: E731
     return [
         ("witnessed_unsigned", [j(step)]),
@@ -137,6 +148,7 @@ def _corpus(tmp_path):
         ("chain_good", [j(intake), j(linked)]),
         ("chain_laundered", [j(intake), j(laundered)]),
         ("chain_missing_parent", [j(linked)]),
+        ("chain_truncated_weak_parent_withheld", [j(depends_on_withheld), j(laundered)]),
     ]
 
 
@@ -160,6 +172,7 @@ def _python_verdicts(cases):
             c = witness.verify_chain(docs)
             out[name] = {
                 "kind": "chain", "ok": c["ok"],
+                "complete": c["complete"], "missing": sorted(c["missing"]),
                 "effective_assurance": c["effective_assurance"],
                 "nodes": {h: {"verified": n["verified"], "links_ok": n["links_ok"],
                               "assurance": n["assurance"]}

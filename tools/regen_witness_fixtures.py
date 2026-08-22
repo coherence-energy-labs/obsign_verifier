@@ -55,6 +55,15 @@ def _shape(verdicts: dict) -> dict:
         else:
             out[name] = {
                 "kind": v.get("kind"), "ok": v.get("ok"),
+                # `complete` is a verdict field, not bookkeeping: a chain is only
+                # verified when nothing referenced is missing, because withholding a
+                # weaker parent is how a chain is made to look stronger. Leaving it out
+                # of the shape would let exactly that regression pass unreported.
+                # `missing` is COUNTED rather than listed -- the hashes change on every
+                # regeneration, so listing them would reintroduce the churn this
+                # function exists to filter out.
+                "complete": v.get("complete"),
+                "missing_count": len(v.get("missing") or []),
                 "effective_assurance": v.get("effective_assurance"),
                 "nodes": sorted(
                     (str(n.get("verified")), str(n.get("links_ok")),

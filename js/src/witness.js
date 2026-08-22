@@ -193,7 +193,7 @@ function verifyWitness(rawDoc, opts) {
  * last, would let one strong step vouch for everything behind it.
  */
 function verifyChain(docs, opts) {
-  const out = { ok: false, effective_assurance: null, nodes: {}, notes: [] };
+  const out = { ok: false, complete: false, missing: [], effective_assurance: null, nodes: {}, notes: [] };
   try {
     const byHash = new Map();      // hash -> {raw, v} : raw for integrity, v for fields
     for (const raw of arr(docs)) {
@@ -206,6 +206,7 @@ function verifyChain(docs, opts) {
     if (byHash.size === 0) { out.notes.push('no usable documents'); return out; }
 
     let weakest = null;
+    const missing = new Set();
     for (const [h, entry] of byHash) {
       const d = entry.v;
       const v = d.spec === SPEC
@@ -232,6 +233,7 @@ function verifyChain(docs, opts) {
       for (const p of priors) {
         const ph = isObj(p) ? p.receipt_sha256 : null;
         const parentEntry = byHash.get(ph);
+        if (parentEntry === undefined && typeof ph === 'string' && ph) missing.add(ph);
         if (parentEntry === undefined) {
           // INCOMPLETE, not false: the parent may simply not have been supplied.
           if (node.links_ok === true) node.links_ok = 'incomplete';
@@ -256,10 +258,16 @@ function verifyChain(docs, opts) {
     if (hasCycle(byHash)) { out.notes.push('the prior references contain a cycle; this is not a chain'); return out; }
 
     out.effective_assurance = (weakest !== null && weakest >= 0) ? LADDER[weakest] : null;
+    out.missing = Array.from(missing).sort();
+    out.complete = missing.size === 0;
     let allOk = true;
     for (const n of Object.values(out.nodes)) if (!n.verified || n.links_ok === false) allOk = false;
-    out.ok = allOk;
-    if (out.ok) {
+    // `complete` is load-bearing: taking the minimum only defends against a weak link
+    // that is PRESENT. Withholding one beats it.
+    out.ok = Object.keys(out.nodes).length > 0 && out.complete && allOk;
+    if (!out.complete) {
+      out.notes.push(`INCOMPLETE: ${missing.size} referenced document(s) were not supplied, so the chain's origin is unknown and ${JSON.stringify(out.effective_assurance)} is the assurance of the FRAGMENT provided, not of the chain. Withholding a weaker parent is how a chain is made to look stronger than it is. This is not a forgery finding -- produce the missing documents to settle it.`);
+    } else if (out.ok) {
       out.notes.push(`chain of ${Object.keys(out.nodes).length} document(s); effective assurance is the WEAKEST link: ${JSON.stringify(out.effective_assurance)} -- ${MEANING[out.effective_assurance] || ''}`);
     }
     return out;
