@@ -249,3 +249,28 @@ def test_the_ladders_are_the_same_ladder(tmp_path):
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout) == list(witness.LADDER), (
         "the two ports order the assurance ladder differently")
+
+
+def test_the_frozen_fixtures_still_match_live_python(verdicts):
+    """FIXTURES GO STALE, AND A STALE FIXTURE FREEZES A BUG AS THE EXPECTED ANSWER.
+
+    `js/test/fixtures/witness_corpus.json` carries Python's verdicts so the JS port can
+    be checked in CI, where this producer checkout is absent and everything above SKIPS.
+    That file is only trustworthy while it still describes what Python actually does, so
+    this is the direction that catches drift: recompute the recorded cases with the
+    CURRENT Python implementation and require the frozen verdicts to match.
+
+    The two checks are a pair. Fixtures alone freeze whatever was true the day they were
+    written; the live differential alone runs on one workstation.
+    """
+    fixtures = Path(__file__).resolve().parent.parent / "js" / "test" / "fixtures" / "witness_corpus.json"
+    assert fixtures.is_file(), f"{fixtures} is missing; the JS port has nothing to check against"
+    frozen = json.loads(fixtures.read_text(encoding="utf-8"))
+
+    live = _python_verdicts(frozen["cases"])
+    stale = [n for n in frozen["python_verdicts"] if frozen["python_verdicts"][n] != live.get(n)]
+    assert not stale, (
+        f"the frozen fixtures no longer match this Python implementation for: {stale}. "
+        f"Regenerate them (tools/regen_witness_fixtures.py) and re-read the diff before "
+        f"accepting it -- a fixture updated without being read is how a regression "
+        f"becomes the expected answer.")
