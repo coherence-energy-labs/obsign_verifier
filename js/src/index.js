@@ -19,10 +19,16 @@ const canonical = require('./canonical.js');
 const replay = require('./replay.js');
 const { verify } = require('./verify.js');
 const { verifyGraph } = require('./graph.js');
+const witness = require('./witness.js');
 
 module.exports = {
   verify,
   verifyGraph,
+  verifyWitness: witness.verifyWitness,
+  verifyChain: witness.verifyChain,
+  deriveAssurance: witness.deriveAssurance,
+  WITNESS_SPEC: witness.SPEC,
+  WITNESS_LADDER: witness.LADDER,
   loadReceipt: canonical.loadReceipt,
   claimOf: canonical.claimOf,
   canonicalString: canonical.canonicalString,
