@@ -1,0 +1,268 @@
+{
+  "_comment": "FROZEN CORPUS + PYTHON VERDICTS. The live cross-implementation differential (tests/test_the_two_ports_agree_about_a_witness.py) needs the coherence_compute producer checkout, which CI does not have -- so there it SKIPS, and a skip is never a pass. These fixtures let the JS port be checked against Python's actual answers anywhere, with no producer present. Regenerate with tools/regen_witness_fixtures.py; test_the_frozen_fixtures_still_match_live_python fails if they go stale.",
+  "cases": [
+    [
+      "witnessed_unsigned",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 56}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\"}"
+      ]
+    ],
+    [
+      "witnessed_signed",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 56}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\", \"signature\": {\"spec\": \"obsign/signature/v2\", \"alg\": \"ed25519\", \"signer\": \"Lab\", \"public_key\": \"31c51f5dba74ccb900d0ce5298fbf202653cca496afd6aef37664367caf75afc\", \"binds\": [], \"binds_sha256\": null, \"sig\": \"fc74ae6efe10226855faa553bab34fe018d4f2452deacfab0f72a7420e0aa526dd0f06b667ed9a0e77854394a889705b604238380b1903c8dbe94731dc7c8509\"}}"
+      ]
+    ],
+    [
+      "custody",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [], \"outputs\": [{\"role\": \"artifact\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\"}, \"assurance\": \"custody\", \"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\"}"
+      ]
+    ],
+    [
+      "asserted_in_process",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"c.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\c.txt\", \"sha256\": \"e4c1dfb463fa29017811f79b5da133de4295c51f043970629f8652c286f3b275\", \"bytes\": 8}], \"tool\": {\"name\": \"opencv\", \"in_process\": true, \"binary\": {\"version\": \"4.10\", \"sha256_unavailable\": \"in-process call; no binary ran\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 0}, \"assurance\": \"asserted\", \"receipt_sha256\": \"3d96ea6e03dbea748ccd2132b2388704f4c23d2b0da4a08b0d5c423b61d12402\"}"
+      ]
+    ],
+    [
+      "tampered_claim",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 99, \"duration_ms\": 56}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\", \"signature\": {\"spec\": \"obsign/signature/v2\", \"alg\": \"ed25519\", \"signer\": \"Lab\", \"public_key\": \"31c51f5dba74ccb900d0ce5298fbf202653cca496afd6aef37664367caf75afc\", \"binds\": [], \"binds_sha256\": null, \"sig\": \"fc74ae6efe10226855faa553bab34fe018d4f2452deacfab0f72a7420e0aa526dd0f06b667ed9a0e77854394a889705b604238380b1903c8dbe94731dc7c8509\"}}"
+      ]
+    ],
+    [
+      "overclaimed_rung",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 56}, \"assurance\": \"environment-pinned\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\"}"
+      ]
+    ],
+    [
+      "argv_with_unhashable_binary",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"ffmpeg\", \"argv\": [\"ffmpeg\", \"-i\", \"in.mp4\", \"out.mp4\"], \"binary\": {\"path\": \"/usr/bin/ffmpeg\", \"version\": \"n8.1\", \"sha256_unavailable\": \"OSError: simulated\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Linux\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\"}, \"assurance\": \"asserted\", \"receipt_sha256\": \"c9021bf767a439dbfc52a0a8eec5089e6558ff471f5f86510bccafdde5f2c3ad\"}"
+      ]
+    ],
+    [
+      "argv_with_hashed_binary",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"ffmpeg\", \"argv\": [\"ffmpeg\", \"-i\", \"in.mp4\", \"out.mp4\"], \"binary\": {\"path\": \"/usr/bin/ffmpeg\", \"version\": \"n8.1\", \"sha256\": \"abababababababababababababababababababababababababababababababab\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Linux\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\"}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"83dd6a82ecfe3102dbcd4a72cf8ae354a5e51e2b97e7c4ff9e55e1f9fad55cb4\"}"
+      ]
+    ],
+    [
+      "forged_signature",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 56}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\", \"signature\": {\"spec\": \"obsign/signature/v2\", \"alg\": \"ed25519\", \"signer\": \"Lab\", \"public_key\": \"31c51f5dba74ccb900d0ce5298fbf202653cca496afd6aef37664367caf75afc\", \"binds\": [], \"binds_sha256\": null, \"sig\": \"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}}"
+      ]
+    ],
+    [
+      "signer_swapped_after_signing",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 56}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c9d0fe9bddd57fa2f60ad4ace94cf2a3ddaf4b100f0ba7008b3f89f966f7101c\", \"signature\": {\"spec\": \"obsign/signature/v2\", \"alg\": \"ed25519\", \"signer\": \"Reuters\", \"public_key\": \"31c51f5dba74ccb900d0ce5298fbf202653cca496afd6aef37664367caf75afc\", \"binds\": [], \"binds_sha256\": null, \"sig\": \"fc74ae6efe10226855faa553bab34fe018d4f2452deacfab0f72a7420e0aa526dd0f06b667ed9a0e77854394a889705b604238380b1903c8dbe94731dc7c8509\"}}"
+      ]
+    ],
+    [
+      "not_a_witness",
+      [
+        "{\"spec\": \"obsign/receipt/v1\", \"receipt_sha256\": \"abababababababababababababababababababababababababababababababab\"}"
+      ]
+    ],
+    [
+      "chain_good",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [], \"outputs\": [{\"role\": \"artifact\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\"}, \"assurance\": \"custody\", \"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\"}",
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"prior\": [{\"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\", \"spec\": \"obsign/witness/v1\"}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 53}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"67bdd742d72b49141b6ed041fcd18ed2529ff83bd94d275d9ec86fbf5b9c4938\"}"
+      ]
+    ],
+    [
+      "chain_laundered",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [], \"outputs\": [{\"role\": \"artifact\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\"}, \"assurance\": \"custody\", \"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\"}",
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"c.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\c.txt\", \"sha256\": \"e4c1dfb463fa29017811f79b5da133de4295c51f043970629f8652c286f3b275\", \"bytes\": 8}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"e4c1dfb463fa29017811f79b5da133de4295c51f043970629f8652c286f3b275\", \"bytes\": 8}], \"prior\": [{\"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\", \"spec\": \"obsign/witness/v1\"}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\c.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:35+00:00\", \"exit_code\": 0, \"duration_ms\": 106}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"0862fc459a6f1102e8d343a3b0fa2f1829386b8d66002b24aba4fb4e96ec0746\"}"
+      ]
+    ],
+    [
+      "chain_missing_parent",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"prior\": [{\"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\", \"spec\": \"obsign/witness/v1\"}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:34+00:00\", \"exit_code\": 0, \"duration_ms\": 53}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"67bdd742d72b49141b6ed041fcd18ed2529ff83bd94d275d9ec86fbf5b9c4938\"}"
+      ]
+    ],
+    [
+      "chain_truncated_weak_parent_withheld",
+      [
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"a.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"sha256\": \"495be88d166f4ddaf08450c2129912e72e6b4511767c81c8188e5417bb1cc148\", \"bytes\": 20}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"556d8d157e02caf60c043a403e5767b91e29b8f6418e2b07fc5c78527ef99cb7\", \"bytes\": 20}], \"prior\": [{\"receipt_sha256\": \"a0b6f1acd5adfd6e55e59e5544356957f6e15d935dc964f8beba8a6afa7992e9\", \"spec\": \"obsign/witness/v1\"}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\a.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:35+00:00\", \"exit_code\": 0, \"duration_ms\": 49}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"c97307805b5f75bcf4ecb011088fa2e53324e4c3ccc28972c34d7f1357a557d1\"}",
+        "{\"spec\": \"obsign/witness/v1\", \"producer\": {\"name\": \"obsign\", \"version\": \"2.0.0\", \"spec\": \"obsign/spec/1\"}, \"inputs\": [{\"role\": \"input\", \"ref\": \"c.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\c.txt\", \"sha256\": \"e4c1dfb463fa29017811f79b5da133de4295c51f043970629f8652c286f3b275\", \"bytes\": 8}], \"outputs\": [{\"role\": \"output\", \"ref\": \"b.txt\", \"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\", \"sha256\": \"e4c1dfb463fa29017811f79b5da133de4295c51f043970629f8652c286f3b275\", \"bytes\": 8}], \"prior\": [{\"receipt_sha256\": \"d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7\", \"spec\": \"obsign/witness/v1\"}], \"tool\": {\"name\": \"python.exe\", \"argv\": [\"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"-c\", \"import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text().upper())\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\c.txt\", \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Temp\\\\tmptox0jny3\\\\b.txt\"], \"binary\": {\"path\": \"C:\\\\Users\\\\Josh\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\python.exe\", \"sha256\": \"cce21c0e8710e304273e98ac4b2b0f5aceb639acbcd2343cbaa5c4e81619c45b\", \"bytes\": 106328, \"version\": \"Python 3.14.3\"}}, \"environment\": {\"kind\": \"host\", \"os\": \"Windows\", \"release\": \"11\", \"arch\": \"AMD64\"}, \"observed\": {\"at\": \"2026-08-22T05:44:35+00:00\", \"exit_code\": 0, \"duration_ms\": 106}, \"assurance\": \"witnessed\", \"receipt_sha256\": \"0862fc459a6f1102e8d343a3b0fa2f1829386b8d66002b24aba4fb4e96ec0746\"}"
+      ]
+    ]
+  ],
+  "python_verdicts": {
+    "witnessed_unsigned": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": null
+    },
+    "witnessed_signed": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": true
+    },
+    "custody": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "custody",
+      "derived": "custody",
+      "signature_valid": null
+    },
+    "asserted_in_process": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "asserted",
+      "derived": "asserted",
+      "signature_valid": null
+    },
+    "tampered_claim": {
+      "kind": "single",
+      "verified": false,
+      "integrity": false,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": null
+    },
+    "overclaimed_rung": {
+      "kind": "single",
+      "verified": false,
+      "integrity": false,
+      "reproduced": null,
+      "assurance": "environment-pinned",
+      "derived": "witnessed",
+      "signature_valid": null
+    },
+    "argv_with_unhashable_binary": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "asserted",
+      "derived": "asserted",
+      "signature_valid": null
+    },
+    "argv_with_hashed_binary": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": null
+    },
+    "forged_signature": {
+      "kind": "single",
+      "verified": false,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": false
+    },
+    "signer_swapped_after_signing": {
+      "kind": "single",
+      "verified": false,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": false
+    },
+    "not_a_witness": {
+      "kind": "single",
+      "verified": false,
+      "integrity": false,
+      "reproduced": null,
+      "assurance": null,
+      "derived": "custody",
+      "signature_valid": null
+    },
+    "chain_good": {
+      "kind": "chain",
+      "ok": true,
+      "complete": true,
+      "missing": [],
+      "effective_assurance": "custody",
+      "nodes": {
+        "d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7": {
+          "verified": true,
+          "links_ok": null,
+          "assurance": "custody"
+        },
+        "67bdd742d72b49141b6ed041fcd18ed2529ff83bd94d275d9ec86fbf5b9c4938": {
+          "verified": true,
+          "links_ok": true,
+          "assurance": "witnessed"
+        }
+      }
+    },
+    "chain_laundered": {
+      "kind": "chain",
+      "ok": false,
+      "complete": true,
+      "missing": [],
+      "effective_assurance": "custody",
+      "nodes": {
+        "d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7": {
+          "verified": true,
+          "links_ok": null,
+          "assurance": "custody"
+        },
+        "0862fc459a6f1102e8d343a3b0fa2f1829386b8d66002b24aba4fb4e96ec0746": {
+          "verified": true,
+          "links_ok": false,
+          "assurance": "witnessed"
+        }
+      }
+    },
+    "chain_missing_parent": {
+      "kind": "single",
+      "verified": true,
+      "integrity": true,
+      "reproduced": null,
+      "assurance": "witnessed",
+      "derived": "witnessed",
+      "signature_valid": null
+    },
+    "chain_truncated_weak_parent_withheld": {
+      "kind": "chain",
+      "ok": false,
+      "complete": false,
+      "missing": [
+        "a0b6f1acd5adfd6e55e59e5544356957f6e15d935dc964f8beba8a6afa7992e9",
+        "d342f3d0cdb9c733a94b440daab84daa6aa2b9fbf6f83d12c35cc8adec5944e7"
+      ],
+      "effective_assurance": "witnessed",
+      "nodes": {
+        "c97307805b5f75bcf4ecb011088fa2e53324e4c3ccc28972c34d7f1357a557d1": {
+          "verified": true,
+          "links_ok": "incomplete",
+          "assurance": "witnessed"
+        },
+        "0862fc459a6f1102e8d343a3b0fa2f1829386b8d66002b24aba4fb4e96ec0746": {
+          "verified": true,
+          "links_ok": "incomplete",
+          "assurance": "witnessed"
+        }
+      }
+    }
+  }
+}
