@@ -38,5 +38,6 @@ pub mod replay;
 pub mod sha2;
 pub mod signature;
 pub mod verify;
+pub mod witness;
 
 pub const VERSION: &str = "0.3.0";

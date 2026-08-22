@@ -14,6 +14,7 @@ use obsign_verify::graph::{verify_graph, verify_graph_with, LinksOk};
 use obsign_verify::json::{canonical_string, load_receipt, parse_permissive, Value};
 use obsign_verify::replay;
 use obsign_verify::verify::{verify, verify_with, Verdict};
+use obsign_verify::witness;
 use std::process::ExitCode;
 
 fn s(v: &str) -> Value {
@@ -256,6 +257,82 @@ fn harness(mode: &str, path: &str) {
                         ("complete", Value::Bool(g.complete)),
                         ("missing", strings(&g.missing)),
                         ("roots", strings(&roots)),
+                        ("nodes", nodes),
+                    ])
+                }
+            }
+            // obsign/witness/v1: a single document, or a chain when the payload is a
+            // list of more than one. Field names mirror the Python and JavaScript
+            // runners exactly, so the comparator compares three dictionaries rather
+            // than three prose reports.
+            "witness" => {
+                let texts = payload
+                    .as_array()
+                    .expect("witness case payload must be a list of document texts");
+                let mut docs = Vec::new();
+                let mut all_loaded = true;
+                for t in texts {
+                    match t.as_str().map(|x| load_receipt(&x)) {
+                        Some(Ok(v)) => docs.push(v),
+                        _ => all_loaded = false,
+                    }
+                }
+                if !all_loaded {
+                    obj(vec![("loaded", Value::Bool(false))])
+                } else if docs.len() == 1 {
+                    let v = witness::verify_witness(&docs[0]);
+                    obj(vec![
+                        ("kind", s("single")),
+                        ("verified", Value::Bool(v.verified)),
+                        ("integrity", Value::Bool(v.integrity)),
+                        // Always null: nothing was re-executed, and `false` would
+                        // accuse the document of failing a test that never ran.
+                        ("reproduced", Value::Null),
+                        ("assurance", match &v.assurance {
+                            Some(a) => s(a),
+                            None => Value::Null,
+                        }),
+                        ("derived", s(v.derived)),
+                        ("signature_valid", match v.signature_valid {
+                            Some(b) => Value::Bool(b),
+                            None => Value::Null,
+                        }),
+                    ])
+                } else {
+                    let c = witness::verify_chain(&docs);
+                    let nodes = Value::Object(
+                        c.nodes
+                            .iter()
+                            .map(|(d, n)| {
+                                (
+                                    d.encode_utf16().collect::<Vec<u16>>(),
+                                    obj(vec![
+                                        ("verified", Value::Bool(n.verified)),
+                                        (
+                                            "links_ok",
+                                            match n.links_ok {
+                                                witness::LinksOk::None => Value::Null,
+                                                witness::LinksOk::Yes => Value::Bool(true),
+                                                witness::LinksOk::No => Value::Bool(false),
+                                                witness::LinksOk::Incomplete => s("incomplete"),
+                                            },
+                                        ),
+                                        ("assurance", match &n.assurance {
+                                            Some(a) => s(a),
+                                            None => Value::Null,
+                                        }),
+                                    ]),
+                                )
+                            })
+                            .collect(),
+                    );
+                    obj(vec![
+                        ("kind", s("chain")),
+                        ("ok", Value::Bool(c.ok)),
+                        ("effective_assurance", match &c.effective_assurance {
+                            Some(a) => s(a),
+                            None => Value::Null,
+                        }),
                         ("nodes", nodes),
                     ])
                 }

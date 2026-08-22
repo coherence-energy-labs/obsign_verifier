@@ -1,4 +1,4 @@
-"""The Python and JavaScript witness verifiers must return the SAME verdict.
+"""The Python, JavaScript and Rust witness verifiers must return the SAME verdict.
 
 WHY THIS FILE IS THE POINT OF HAVING TWO PORTS. A suite in which every implementation
 is checked only against itself cannot see the one failure that matters here: two
@@ -7,9 +7,13 @@ the document to whichever port says yes. This repository has been bitten by it b
 which is why the receipt path already has a cross-language differential; the witness
 path had none, because until now there was only one implementation.
 
-THE SPECIFIC RISK. The assurance ladder is duplicated: `obsign/witness.py`
-`derive_assurance` and `js/src/witness.js` `deriveAssurance` are the same decision tree
-written twice. A drift is not cosmetic -- it is one port calling a document `witnessed`
+THE SPECIFIC RISK. The assurance ladder is written THREE times: `obsign/witness.py`
+`derive_assurance`, `js/src/witness.js` `deriveAssurance` and `rust/src/witness.rs`
+`derive_assurance` are the same decision tree in three languages. Two ports agreeing
+proves less than it looks -- both are garbage-collected languages with the same JSON
+habits, and a shared assumption neither questions produces agreement without
+correctness. Rust reads the bytes differently: no JSON.parse, no dict ordering,
+integers held as text. A drift is not cosmetic -- it is one port calling a document `witnessed`
 while the other calls it `asserted`, i.e. disagreeing about whether the operation was
 independently identified.
 
@@ -24,6 +28,7 @@ exclusively valid inputs proves the ports agree about the easy half.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -163,6 +168,25 @@ def _python_verdicts(cases):
     return out
 
 
+def _rust_verdicts(cases, tmp_path):
+    """The Rust leg, through the binary's existing `--harness MODE JOBFILE` convention.
+
+    `rust_binary()` BUILDS before running, so this cannot pass against a binary that
+    predates the source under test -- a leg that consumes an artifact it does not build
+    is dated by whoever last ran cargo, not by the commit.
+    """
+    from rustbin import rust_binary
+
+    exe = rust_binary()
+    p = tmp_path / "rust_cases.json"
+    p.write_text(json.dumps(cases), encoding="utf-8")
+    r = subprocess.run([str(exe), "--harness", "witness", str(p)],
+                       capture_output=True, text=True, timeout=300, encoding="utf-8")
+    if r.returncode != 0:
+        raise AssertionError(f"the Rust harness failed: {r.stderr[:2000]}")
+    return json.loads(r.stdout)
+
+
 def _js_verdicts(cases, tmp_path):
     p = tmp_path / "cases.json"
     p.write_text(json.dumps(cases), encoding="utf-8")
@@ -178,6 +202,12 @@ def verdicts(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("witness_diff")
     cases = _corpus(tmp)
     return cases, _python_verdicts(cases), _js_verdicts(cases, tmp)
+
+
+@pytest.fixture(scope="module")
+def rust_verdicts(verdicts, tmp_path_factory):
+    cases, _, _ = verdicts
+    return _rust_verdicts(cases, tmp_path_factory.mktemp("witness_rust"))
 
 
 def test_the_corpus_covers_both_outcomes(verdicts):
@@ -274,3 +304,46 @@ def test_the_frozen_fixtures_still_match_live_python(verdicts):
         f"Regenerate them (tools/regen_witness_fixtures.py) and re-read the diff before "
         f"accepting it -- a fixture updated without being read is how a regression "
         f"becomes the expected answer.")
+
+
+def test_all_three_ports_return_identical_verdicts(verdicts, rust_verdicts):
+    """THE THREE-WAY. Same bytes, same answers, in three languages.
+
+    Two ports agreeing is weaker evidence than it looks: Python and JavaScript are both
+    garbage-collected, both reach for a dict, and both can inherit one wrong assumption
+    without ever disagreeing. Rust holds integers as text and has no `JSON.parse`, so a
+    parsing assumption the first two share has somewhere to show up.
+    """
+    cases, py, js = verdicts
+    rs = rust_verdicts
+    assert set(py) == set(rs), (
+        f"the ports disagree about WHICH cases exist: "
+        f"python-only={set(py) - set(rs)} rust-only={set(rs) - set(py)}")
+
+    mismatches = []
+    for name in sorted(py):
+        legs = {"python": py[name], "javascript": js[name], "rust": rs[name]}
+        if len({json.dumps(v, sort_keys=True) for v in legs.values()}) != 1:
+            mismatches.append(
+                "\n  " + name + "".join(
+                    f"\n    {k:<11}: {json.dumps(v, sort_keys=True)}"
+                    for k, v in legs.items()))
+    assert not mismatches, (
+        "the three witness verifiers disagree. Two verdicts from one vendor on the same "
+        "bytes is the split a forger farms -- present the document to whichever port "
+        "says yes." + "".join(mismatches))
+
+
+def test_the_rust_ladder_is_the_same_ladder(rust_verdicts):
+    """The rung ORDER is the semantics -- comparisons are by index, so a reordering in
+    one port silently changes what counts as an overclaim there."""
+    _, witness = _producer()
+    from rustbin import rust_binary
+
+    src = (Path(rust_binary()).parents[2] / "src" / "witness.rs").read_text(encoding="utf-8")
+    m = re.search(r"pub const LADDER: \[&str; \d+\] = \[([^\]]*)\]", src)
+    assert m, "could not read LADDER from rust/src/witness.rs"
+    order = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    assert order == list(witness.LADDER), (
+        f"Rust orders the assurance ladder {order}, Python orders it "
+        f"{list(witness.LADDER)}")
