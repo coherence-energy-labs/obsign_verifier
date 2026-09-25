@@ -238,8 +238,15 @@ function loadReceipt(text) {
   // A caller who hands us a string has already lost that information, so the only
   // place the check can live is here, on the bytes.
   if (text instanceof Uint8Array) {
+    // Bound bytes BEFORE decoding allocates a second, potentially huge string.
+    if (text.byteLength > MAX_RECEIPT_BYTES) {
+      throw new JsonError(`receipt larger than ${MAX_RECEIPT_BYTES} bytes`);
+    }
     try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(text);
+      // Preserve U+FEFF so the JSON parser rejects a leading BOM, exactly as
+      // it does for string input and as the Python text reader does.
+      // TextDecoder's default strips it, making byte and text entry disagree.
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(text);
     } catch (e) {
       throw new JsonError('receipt is not valid UTF-8: ' + e.message);
     }
